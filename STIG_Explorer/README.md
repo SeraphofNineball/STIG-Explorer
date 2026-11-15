@@ -101,6 +101,18 @@ automatically).
   approvals) have no single command and say so. DISA's check procedure remains the authoritative test.
 - **Explain for** (top bar) switches between General / SysAdmin / Cyber Pro / All. Your choice is remembered.
 - **Related rules in other STIGs** shows the same requirement on other OS versions.
+- **Export script** (results bar) downloads the validation commands for the filtered rules as a runnable script, a
+  quick way to spot-check a whole system:
+  - **PowerShell (`.ps1`)** for Windows rules:
+    `powershell.exe -ExecutionPolicy Bypass -File .\stig_validation.ps1 [-All] [-LogPath results.txt]` (run elevated)
+  - **Bash (`.sh`)** for RHEL/Ubuntu rules: `sudo bash stig_validation.sh [--all]`
+
+  Scripts detect the OS and run only the checks for that STIG (and, on Windows Server, the domain-controller or
+  member-server rules for the machine's role). `-All` / `--all` runs everything. Each check prints the rule, the expected
+  result and the command output for review; the script does not decide pass/fail. Commands are read-only. DISA check
+  commands that could hang, change state or run for a long time (`sshd -dd`, `logger`, `apt download`, `aide --check`,
+  `rpm -Va`) and commands with placeholders such as `<filename>` are listed at the end of the script as manual checks
+  instead of being run. The app shows the same warning next to those commands.
 - **Topics** shows each security topic at the chosen level. **Export CSV** exports the filtered rule set.
 - **Links:** `index.html#rule=V-257984&level=admin`, `#q=faillock`, `#view=topics`.
 
@@ -141,8 +153,9 @@ STIG_Explorer/
 │   ├── explain.py      # per-rule plain-language text, check commands
 │   ├── build.py        # orchestrates → web/data/stig_data.js
 │   ├── export_docs.py  # Markdown + Word documents
+│   ├── validate.py     # command-line validation commands per rule
 │   └── server.py       # stdlib web server + JSON API (SQLite FTS5)
-├── web/                # index.html, app.js, style.css, data/stig_data.js
+├── web/                # index.html, app.js, scripts.js (script export), style.css, data/stig_data.js
 ├── docs/               # generated guide and per-STIG .md/.docx
 ├── data/raw/           # DISA source zips (git-ignored)
 ├── tests/              # python -m unittest discover -s tests

@@ -1,6 +1,6 @@
 # STIG Explorer: DISA STIG Configuration Guide (RHEL, Ubuntu & Windows)
 
-Generated 2026-11-15 21:23 UTC from DISA STIG XCCDF benchmarks (public.cyber.mil) and DISA CCI List. 3877 rules across 14 STIGs.
+Generated 2026-11-15 21:34 UTC from DISA STIG XCCDF benchmarks (public.cyber.mil) and DISA CCI List. 3877 rules across 14 STIGs.
 
 ## Purpose
 

@@ -250,3 +250,53 @@ class RoleAndUbuntuTests(unittest.TestCase):
         t = topics.TOPIC_BY_ID["firewall"]
         self.assertIn("UFW", topics.topic_text(t, "admin", "linux", "ubuntu"))
         self.assertIn("firewalld", topics.topic_text(t, "admin", "linux", "rhel"))
+
+
+@unittest.skipUnless(build.OUT.exists(), "data file not built")
+class ScriptExportTests(unittest.TestCase):
+    """Generates the .sh/.ps1 exports with web/scripts.js (via Node) and checks them."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        import subprocess
+        import tempfile
+        if not shutil.which("node"):
+            raise unittest.SkipTest("node not installed")
+        cls.tmp = Path(tempfile.mkdtemp())
+        web = build.ROOT / "web"
+        js = (
+            "const fs=require('fs');const src=fs.readFileSync(process.argv[1]+'/data/stig_data.js','utf8');"
+            "const D=JSON.parse(src.slice(src.indexOf('{'),src.lastIndexOf('}')+1));"
+            "const S=require(process.argv[1]+'/scripts.js');"
+            "fs.writeFileSync(process.argv[2]+'/t.sh',S.bash(D.rules,D.meta,'test'));"
+            "fs.writeFileSync(process.argv[2]+'/t.ps1',S.powershell(D.rules,D.meta,'test'));"
+        )
+        subprocess.run(["node", "-e", js, str(web), str(cls.tmp)], check=True)
+        cls.sh = (cls.tmp / "t.sh").read_text()
+        cls.ps1 = (cls.tmp / "t.ps1").read_text(encoding="utf-8-sig")
+
+    def test_bash_syntax(self):
+        import subprocess
+        subprocess.run(["bash", "-n", str(self.tmp / "t.sh")], check=True)
+
+    def test_unsafe_commands_not_executed(self):
+        executed = "\n".join(l for l in self.sh.splitlines() if not l.startswith("#"))
+        for bad in ("sshd -dd", "logger ", "apt download", "aide --check"):
+            self.assertNotIn(bad, executed)
+
+    def test_powershell_structure(self):
+        self.assertIn("param([switch]$All, [string]$LogPath)", self.ps1)
+        self.assertGreater(self.ps1.count("Invoke-PSCheck '"), 500)
+        self.assertTrue(self.ps1.rstrip().endswith("if ($LogPath) { Stop-Transcript | Out-Null }"))
+
+    def test_powershell_parses(self):
+        """Full parse with the real PowerShell parser (needs pwsh on PATH)."""
+        import shutil
+        import subprocess
+        if not shutil.which("pwsh"):
+            self.skipTest("pwsh not installed")
+        cmd = ("$e=$null;$t=$null;[void][System.Management.Automation.Language.Parser]::ParseFile("
+               f"'{self.tmp / 't.ps1'}',[ref]$t,[ref]$e);$e.Count")
+        out = subprocess.run(["pwsh", "-NoProfile", "-Command", cmd], capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "0")

@@ -140,7 +140,7 @@ _ROOT_CMDS = (
 )
 # "$ cmd" / "$ sudo cmd" (RHEL 8+) or "# cmd" root prompt (RHEL 7). The root form
 # only matches known commands so "# comment" lines in config examples are ignored.
-_CMD = re.compile(rf"^(?:\$\s*|#\s+(?=(?:{_ROOT_CMDS})\b|/usr/))(?:sudo\s+)?(.+)$")
+_CMD = re.compile(rf"^(?:\$\s+|#\s+(?=(?:{_ROOT_CMDS})\b|/usr/))(?:sudo\s+)?(.+)$")
 _PKG = re.compile(r"\b(?:dnf|yum|apt-get|apt)\s+(?:-y\s+)?(?:--purge\s+)?(install|remove|erase|purge)\s+(?:-y\s+)?([\w.+\- ]+)")
 _SVC = re.compile(r"\bsystemctl\s+((?:enable|disable|mask|unmask|start|stop)(?:\s+--now)?)\s+(?:--now\s+)?([\w@.\-]+)")
 _PERM = re.compile(r"^(chmod|chown|chgrp|setfacl|restorecon|semanage|setsebool|chcon)\s+(.+)$")

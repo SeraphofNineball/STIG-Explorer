@@ -94,6 +94,14 @@
           <option value="topic">Sort: Topic</option>
         </select>
         <button id="csvBtn" class="btn ghost" title="Export the filtered rules to CSV">Export CSV</button>
+        <details class="menu" id="scriptMenu">
+          <summary class="btn ghost" title="Download a read-only script that runs the validation commands for the filtered rules">Export script ▾</summary>
+          <div class="menu-pop" role="menu">
+            <button role="menuitem" data-script="ps1"><b>PowerShell (.ps1)</b><span id="ps1Count" class="muted small"></span></button>
+            <button role="menuitem" data-script="sh"><b>Bash (.sh)</b><span id="shCount" class="muted small"></span></button>
+            <p class="small muted">Scripts only read settings. They run the checks for the OS they're on (use -All / --all to run everything) and print each result next to the expected value.</p>
+          </div>
+        </details>
       </div>
       <ol id="list" class="rule-list"></ol>
       <button id="moreBtn" class="btn ghost more" hidden>Show more</button>
@@ -120,6 +128,7 @@
   </main>
 
   <script src="data/stig_data.js"></script>
+  <script src="scripts.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

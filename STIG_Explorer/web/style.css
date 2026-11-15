@@ -110,6 +110,20 @@ code, pre { font-family: var(--mono); }
 .btn { border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 .btn.ghost { background: var(--panel); color: var(--text); border-color: var(--border); }
 .btn.more { width: 100%; margin: 8px 0 20px; }
+.menu { position: relative; }
+.menu > summary { list-style: none; display: inline-block; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-pop {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 10; width: 280px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+}
+.menu-pop button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; text-align: left;
+  border: 0; background: none; padding: 6px 8px; border-radius: 6px; cursor: pointer;
+}
+.menu-pop button:hover:not(:disabled) { background: var(--accent-soft); }
+.menu-pop button:disabled { opacity: .45; cursor: not-allowed; }
+.menu-pop p { margin: 6px 8px 2px; }
 .only-mobile { display: none; }
 
 .rule-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -151,6 +165,7 @@ mark { background: #ffe58a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .val-head .spacer { flex: 1; }
 .val pre.code { margin: 6px 0; }
 .val-expect { font-size: 13px; margin: 0 0 6px; }
+.val-warn { font-size: 12.5px; margin: 0 0 6px; color: var(--cat2); }
 .shell { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 4px; color: #fff; }
 .shell.powershell { background: #2463b0; }
 .shell.cmd { background: #3d4450; }

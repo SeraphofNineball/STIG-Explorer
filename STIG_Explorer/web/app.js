@@ -188,6 +188,12 @@
     out.forEach((r) => c[r.severity]++);
     $("#resultCount").textContent = `${out.length.toLocaleString()} of ${D.rules.length.toLocaleString()} rules`;
     $("#sevSummary").innerHTML = ["high", "medium", "low"].map((k) => `<span class="sev ${k}">${SEV_LABEL[k]} ${c[k]}</span>`).join(" ");
+    if (window.STIGX_SCRIPT) {
+      const n = window.STIGX_SCRIPT.counts(out);
+      $("#ps1Count").textContent = `${n.windows.toLocaleString()} Windows rules`;
+      $("#shCount").textContent = `${n.linux.toLocaleString()} Linux rules`;
+      $$("#scriptMenu [data-script]").forEach((b) => (b.disabled = !(b.dataset.script === "ps1" ? n.windows : n.linux)));
+    }
   }
 
   function highlight(text, terms) {
@@ -268,6 +274,11 @@
         <td data-label="Setting"><code>${esc(s.name)}</code></td><td data-label="Required value">${esc(s.value)}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
+  function unsafeNote(cmd) {
+    const why = window.STIGX_SCRIPT ? window.STIGX_SCRIPT.unsafeReason(cmd) : "";
+    return why ? `<p class="val-warn">⚠ Use with care: this command ${esc(why)}. It is left out of exported scripts.</p>` : "";
+  }
+
   function validationHtml(r) {
     const v = r.validate || [];
     let h = `<h4>Command-line validation</h4>`;
@@ -279,7 +290,8 @@
       const id = `val-${r.vuln_id}-${i}`;
       h += `<div class="val"><div class="val-head"><span class="shell ${esc(c.shell)}">${esc(SHELL_LABEL[c.shell] || c.shell)}</span>
         <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${id}">Copy</button></div>
-        <pre class="code" id="${id}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}</div>`;
+        <pre class="code" id="${id}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}
+        ${unsafeNote(c.cmd)}</div>`;
     });
     return h;
   }
@@ -478,6 +490,36 @@ ${t.pro}
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
+  function filterSummary() {
+    const parts = [];
+    if (state.q) parts.push(`search "${state.q}"`);
+    if (state.sev.size < 3) parts.push("severity " + [...state.sev].map((k) => SEV_LABEL[k]).join("/"));
+    if (state.topic) parts.push("topic " + D.topics[state.topic].name);
+    if (state.role) parts.push("server role " + state.role);
+    if (state.family) parts.push(`NIST ${state.rev} family ${state.family}`);
+    if (state.control) parts.push(`NIST ${state.rev} control ${state.control}`);
+    if (state.impl) parts.push("implemented via " + state.impl);
+    if (state.doc) parts.push("documentable only");
+    return parts.join("; ");
+  }
+
+  function download(text, name, type) {
+    const blob = new Blob([text], { type });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  function exportScript(kind) {
+    const S = window.STIGX_SCRIPT;
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (kind === "ps1") download(S.powershell(state.results, D.meta, filterSummary()), `stig_validation_${stamp}.ps1`, "text/plain;charset=utf-8");
+    else download(S.bash(state.results, D.meta, filterSummary()), `stig_validation_${stamp}.sh`, "text/x-shellscript;charset=utf-8");
+    $("#scriptMenu").open = false;
+  }
+
   // ---------------------------------------------------------------- misc UI
   function setLevel(l) {
     state.level = l; store.set("level", l);
@@ -563,6 +605,10 @@ ${t.pro}
       if (e.key === "ArrowUp") { e.preventDefault(); li.previousElementSibling?.focus(); }
     });
     $("#csvBtn").addEventListener("click", exportCsv);
+    $("#scriptMenu").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-script]"); if (b && !b.disabled) exportScript(b.dataset.script);
+    });
+    document.addEventListener("click", (e) => { if (!e.target.closest("#scriptMenu")) $("#scriptMenu").open = false; });
     $$(".level-pick button").forEach((b) => b.addEventListener("click", () => setLevel(b.dataset.level)));
     $$(".views button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
     $("#filterToggle").addEventListener("click", () => $("#filters").classList.toggle("open"));

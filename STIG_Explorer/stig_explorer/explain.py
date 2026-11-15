@@ -55,7 +55,8 @@ def plain_title(title: str) -> str:
     return t[0].upper() + t[1:] if t else t
 
 
-_CHECK_CMD = re.compile(r"^\s*(?:\$|#(?=\s+(?:" + settings._ROOT_CMDS + r")\b))\s*(?:sudo\s+)?(.+)$")
+# "$ cmd" needs whitespace after the prompt so rsyslog directives like "$ModLoad imtcp" aren't taken as commands.
+_CHECK_CMD = re.compile(r"^\s*(?:\$\s+|#\s+(?=(?:" + settings._ROOT_CMDS + r")\b))(?:\$\s+)?(?:sudo\s+)?(.+)$")
 
 
 def check_commands(check: str, limit: int = 6) -> list[str]:
