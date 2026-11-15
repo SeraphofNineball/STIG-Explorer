@@ -93,6 +93,26 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse([x for x in s if x["type"] == "config"], s)
 
 
+class Rhel7FormatTests(unittest.TestCase):
+    def test_root_prompt_commands(self):
+        rule = {"check": "", "fix": "Install the package:\n\n     # yum install aide\n\n"
+                "Edit the file:\n\n     # Set this to true to lock the screen\n     lock-enabled=true\n\n"
+                "# systemctl enable --now auditd"}
+        s = settings.extract(rule, "linux")
+        self.assertIn({"type": "package", "target": "dnf", "name": "aide", "value": "Installed"}, s)
+        self.assertTrue(any(x["type"] == "service" and x["name"] == "auditd" for x in s))
+        self.assertFalse(any(x["name"].startswith("Set this") for x in s))
+
+    def test_versionless_title(self):
+        self.assertEqual(explain.plain_title("The Red Hat Enterprise Linux operating system must audit all uses "
+                                             "of the semanage command."),
+                         "This computer must audit all uses of the semanage command.")
+
+    def test_root_prompt_check_commands(self):
+        self.assertEqual(explain.check_commands("Check with:\n\n# grep -i maxpoll /etc/ntp.conf\n# This is prose"),
+                         ["grep -i maxpoll /etc/ntp.conf"])
+
+
 class TopicTests(unittest.TestCase):
     def cls(self, title, platform="linux"):
         return topics.classify(title, "", platform)

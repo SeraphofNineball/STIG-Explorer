@@ -22,6 +22,7 @@ BASE = "https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/"
 UA = {"User-Agent": "Mozilla/5.0 (STIG-Explorer)"}
 
 PRODUCTS = [
+    "U_RHEL_7",  # sunset by DISA; final release V3R15
     "U_RHEL_8",
     "U_RHEL_9",
     "U_RHEL_10",

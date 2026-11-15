@@ -32,6 +32,8 @@
     feature: "Feature", command: "Command" };
 
   const stigByKey = Object.fromEntries(D.stigs.map((s) => [s.key, s]));
+  const stigOrder = Object.fromEntries(D.stigs.map((s, i) => [s.key, i]));  // build order: platform, then version
+  const byStig = (a, b) => stigOrder[a.stig] - stigOrder[b.stig];
   const topicTxt = (t, f, plat) => { const v = t[f]; return v && typeof v === "object" ? (v[plat] || Object.values(v)[0]) : (v || ""); };
   const nist = (r, rev) => { const out = []; for (const c of r.ccis) for (const i of (D.ccis[c]?.[rev] || [])) if (!out.includes(i)) out.push(i); return out; };
   const normCtl = (s) => s.toUpperCase().replace(/\s+/g, "");
@@ -151,8 +153,8 @@
       out.forEach((r) => (r._score = score(r)));
     } else out.forEach((r) => (r._score = 0));
     const cmp = {
-      stig: (a, b) => a.stig.localeCompare(b.stig) || a.stig_id.localeCompare(b.stig_id),
-      sev: (a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity] || a.stig.localeCompare(b.stig) || a.stig_id.localeCompare(b.stig_id),
+      stig: (a, b) => byStig(a, b) || a.stig_id.localeCompare(b.stig_id),
+      sev: (a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity] || byStig(a, b) || a.stig_id.localeCompare(b.stig_id),
       topic: (a, b) => D.topics[a.topics[0]].name.localeCompare(D.topics[b.topics[0]].name) || a.stig_id.localeCompare(b.stig_id),
     }[state.sort];
     out.sort((a, b) => (b._score - a._score) || cmp(a, b));
@@ -300,7 +302,7 @@
     const eq = (r.eq !== null && r.eq !== undefined ? eqGroups[r.eq] : []).filter((x) => x !== r);
     const eqHtml = eq.length ? `<section class="level-block"><header><h3>Related rules in other STIGs</h3>
       <span class="muted small">Same requirement or setting on other platforms/versions</span></header>
-      <div class="level-body"><ul class="eq-list">${eq.sort((a, b) => a.stig.localeCompare(b.stig)).map((x) =>
+      <div class="level-body"><ul class="eq-list">${eq.sort(byStig).map((x) =>
         `<li><span class="chip ${stigByKey[x.stig].platform}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
          <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${x.severity}">${SEV_LABEL[x.severity]}</span>
          <span class="muted">${esc(x.title)}</span></li>`).join("")}</ul></div></section>` : "";

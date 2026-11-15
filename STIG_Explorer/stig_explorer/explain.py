@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import re
 
-from . import topics
+from . import settings, topics
 
 _PRODUCT = re.compile(
-    r"(?:The )?(?:(?:RHEL|Red Hat Enterprise Linux) ?\d+|(?:Microsoft )?Windows(?: Server)? ?(?:\d{4}|1[01])|Window 10|Windows 2016)"
+    r"(?:The )?(?:RHEL ?\d+|Red Hat Enterprise Linux(?: ?\d+)?|(?:Microsoft )?Windows(?: Server)? ?(?:\d{4}|1[01])|Window 10|Windows 2016)"
     r"(?P<os> operating systems?| systems?)?",
     re.I,
 )
@@ -55,7 +55,7 @@ def plain_title(title: str) -> str:
     return t[0].upper() + t[1:] if t else t
 
 
-_CHECK_CMD = re.compile(r"^\s*\$\s*(?:sudo\s+)?(.+)$")
+_CHECK_CMD = re.compile(r"^\s*(?:\$|#(?=\s+(?:" + settings._ROOT_CMDS + r")\b))\s*(?:sudo\s+)?(.+)$")
 
 
 def check_commands(check: str, limit: int = 6) -> list[str]:

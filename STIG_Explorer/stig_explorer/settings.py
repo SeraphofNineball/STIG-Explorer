@@ -131,7 +131,15 @@ _PATH = re.compile(r"(/(?:etc|usr|var|boot|lib|proc|sys|root|home|opt|run)/[\w./
 _CFG_PATH = re.compile(r"(/(?:etc|usr/lib|usr/share|boot|root)/[\w./*@+:-]*[\w*])")
 _SYSCTL = re.compile(r"^((?:kernel|net|fs|vm|user|crypto|dev)\.[\w.\-/*]+)\s*=\s*(\S+)$")
 _AUDIT = re.compile(r"^(-[aw]\s.+|-e\s+2|--loginuid-immutable|-f\s+\d|-b\s+\d+)$")
-_CMD = re.compile(r"^\$\s*(?:sudo\s+)?(.+)$")
+_ROOT_CMDS = (
+    "aide|auditctl|augenrules|authconfig|authselect|awk|blkid|cat|chage|chattr|chcon|chgrp|chmod|chown|cp|dconf|"
+    "df|dnf|dracut|echo|find|fips-mode-setup|firewall-cmd|grep|grub2-mkconfig|grub2-setpassword|grubby|ip|ln|ls|"
+    "mkdir|modprobe|more|mount|mv|nmcli|passwd|postconf|restorecon|rm|rpm|sed|semanage|service|setfacl|setsebool|"
+    "stat|sudo|sysctl|systemctl|touch|update-crypto-policies|usbguard|useradd|usermod|vi|visudo|yum"
+)
+# "$ cmd" / "$ sudo cmd" (RHEL 8+) or "# cmd" root prompt (RHEL 7). The root form
+# only matches known commands so "# comment" lines in config examples are ignored.
+_CMD = re.compile(rf"^(?:\$\s*|#\s+(?=(?:{_ROOT_CMDS})\b|/usr/))(?:sudo\s+)?(.+)$")
 _PKG = re.compile(r"\b(?:dnf|yum)\s+(?:-y\s+)?(install|remove|erase)\s+(?:-y\s+)?([\w.+\- ]+)")
 _SVC = re.compile(r"\bsystemctl\s+((?:enable|disable|mask|unmask|start|stop)(?:\s+--now)?)\s+(?:--now\s+)?([\w@.\-]+)")
 _PERM = re.compile(r"^(chmod|chown|chgrp|setfacl|restorecon|semanage|setsebool|chcon)\s+(.+)$")

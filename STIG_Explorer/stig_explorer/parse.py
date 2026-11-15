@@ -241,4 +241,6 @@ def load_inputs(raw_dir: Path) -> tuple[list[dict], dict[str, dict]]:
             prev = benchmarks.get(b["key"])
             if prev is None or _release_tuple(b) > _release_tuple(prev):
                 benchmarks[b["key"]] = b
-    return sorted(benchmarks.values(), key=lambda b: (b["platform"], b["key"])), cci
+    def natural(b: dict) -> tuple:
+        return (b["platform"], [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", b["key"])])
+    return sorted(benchmarks.values(), key=natural), cci

@@ -10,7 +10,7 @@ three levels:
 | **L2: System Administrator** | Sysadmins and engineers | Exact settings changed (registry values, GPO paths, config-file lines, sysctl, dconf, services, packages, permissions, audit rules, Windows features), how it works, operational impact, quick verification commands, DISA check & fix text |
 | **L3: General Audience** | Anyone with limited security or IT background | Plain-language restatement of the rule, why it matters (with an everyday analogy), how important it is, key terms |
 
-**Current content:** 2,898 rules from 9 STIGs: RHEL 8, 9 and 10; Windows 10 and 11; Windows Server 2016, 2019, 2022 and 2025.
+**Current content:** 3,142 rules from 10 STIGs: RHEL 7 (final release V3R15; DISA has sunset it), 8, 9 and 10; Windows 10 and 11; Windows Server 2016, 2019, 2022 and 2025.
 
 ## Quick start
 
