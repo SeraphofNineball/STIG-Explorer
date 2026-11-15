@@ -13,3 +13,6 @@ services:
     environment:
       STIGX_QUIET: "0"
     restart: unless-stopped
+    # Pick up tag changes (python -m stig_explorer.tags) without rebuilding the image:
+    # volumes:
+    #   - ./web/data/tags.js:/app/web/data/tags.js:ro

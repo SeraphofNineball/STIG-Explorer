@@ -149,6 +149,15 @@ mark { background: #ffe58a; color: inherit; border-radius: 2px; padding: 0 1px; 
 .chip.ubuntu { color: var(--ubuntu); }
 .chip.windows { color: var(--windows); }
 .chip.topic { cursor: pointer; }
+.tag-badge {
+  --tag: #b71c1c; display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: .03em; line-height: 1.5;
+  padding: 0 6px; margin-right: 6px; border-radius: 4px; color: #fff; background: var(--tag); vertical-align: 2px;
+}
+h2 .tag-badge { font-size: 12px; vertical-align: 3px; }
+.tag-callout {
+  --tag: #b71c1c; margin: 0 0 8px; padding: 6px 10px; border-left: 4px solid var(--tag);
+  background: var(--panel-2); border-radius: 0 6px 6px 0; font-size: 13px;
+}
 .chip.role-dc { color: #6a1b9a; border-color: #b39ddb; background: #f3e5f5; font-weight: 600; }
 .chip.role-ms { color: #00695c; border-color: #80cbc4; background: #e0f2f1; }
 :root[data-theme="dark"] .chip.role-dc { color: #ce93d8; background: #2a1b33; border-color: #5e3a70; }

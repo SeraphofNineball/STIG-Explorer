@@ -42,6 +42,14 @@
   const nist = (r, rev) => { const out = []; for (const c of r.ccis) for (const i of (D.ccis[c]?.[rev] || [])) if (!out.includes(i)) out.push(i); return out; };
   const normCtl = (s) => s.toUpperCase().replace(/\s+/g, "");
 
+  // Custom tags (e.g. FMCC) compiled from tags/*.csv into data/tags.js. Optional.
+  const TAGS = window.STIG_TAGS || { tags: [], rules: {} };
+  const tagDef = Object.fromEntries(TAGS.tags.map((t) => [t.id, t]));
+  for (const r of D.rules) {
+    r._tags = (TAGS.rules[r.id] || []).filter(([t]) => tagDef[t]);   // [[tagId, [notes]]]
+    r._tagLabels = r._tags.map(([t]) => tagDef[t].label);
+  }
+
   // Precompute search haystacks and per-rule data.
   for (const r of D.rules) {
     const s = r.settings.map((x) => `${x.target} ${x.name} ${x.value}`).join(" ");
@@ -49,7 +57,7 @@
     const n = ["rev3", "rev4", "rev5"].map((rev) => nist(r, rev).join(" ")).join(" ");
     r._hay = [r.title, r.vuln_id, r.stig_id, r.id, r.srg, r.ccis.join(" "), n, s, t, stigByKey[r.stig].product,
       r.discussion, r.fix, r.check, (r.legacy_ids || []).join(" "), (r.validate || []).map((v) => v.cmd).join("\n"),
-      ROLE_LABEL[r.role] || ""].join("\n").toLowerCase();
+      ROLE_LABEL[r.role] || "", r._tags.map(([t]) => `${tagDef[t].label} ${tagDef[t].name}`).join(" ")].join("\n").toLowerCase();
     r._nist = { rev3: nist(r, "rev3"), rev4: nist(r, "rev4"), rev5: nist(r, "rev5") };
   }
   const eqGroups = {};
@@ -61,7 +69,7 @@
     q: "",
     stigs: new Set(store.get("stigs", D.stigs.map((s) => s.key)).filter((k) => stigByKey[k])),
     sev: new Set(["high", "medium", "low"]),
-    topic: "", rev: "rev5", family: "", control: "", impl: "", doc: false, role: "",
+    topic: "", rev: "rev5", family: "", control: "", impl: "", doc: false, role: "", tags: new Set(),
     sort: "stig", level: store.get("level", "generic"), view: "rules",
     results: [], shown: 0, selected: null,
   };
@@ -95,6 +103,15 @@
       }
     }
     $("#stigFilters").innerHTML = html;
+    if (TAGS.tags.length) {
+      $("#tagSection").hidden = false;
+      $("#tagFilters").innerHTML = TAGS.tags.map((t) =>
+        `<label class="check" title="${esc(t.description || t.name)}"><input type="checkbox" data-tag="${esc(t.id)}">
+          <span class="tag-badge" data-tagcolor="${esc(t.color)}">${esc(t.label)}</span> ${esc(t.name)}
+          <span class="count">${t.count}</span></label>` +
+        (t.count ? "" : `<p class="small muted">No rules tagged yet. Add IDs to tags/${esc(t.source)} and run <code>python -m stig_explorer.tags</code>.</p>`)).join("");
+      paintTags($("#tagFilters"));
+    }
     $("#sevFilters").innerHTML = ["high", "medium", "low"].map((k) =>
       `<label class="check"><input type="checkbox" data-sev="${k}" checked> <span class="sev ${k}">${SEV_LABEL[k]}</span> ${k}</label>`).join("");
 
@@ -143,6 +160,7 @@
       if (state.topic && !r.topics.includes(state.topic)) continue;
       if (state.impl && !r.setting_cats.includes(state.impl)) continue;
       if (state.doc && !r.documentable) continue;
+      if (state.tags.size && !r._tags.some(([t]) => state.tags.has(t))) continue;
       if (state.role) {
         if (!r.role) continue;
         if (state.role === "dc" && r.role === "ms") continue;
@@ -214,12 +232,13 @@
       const t = D.topics[r.topics[0]];
       return `<li class="rule-item" data-id="${esc(r.id)}" tabindex="0" ${state.selected === r ? 'aria-current="true"' : ""}>
         <span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
-        <div class="title">${highlight(r.title, terms)}</div>
+        <div class="title">${tagBadges(r)}${highlight(r.title, terms)}</div>
         <div class="meta"><span class="chip ${s.family}">${esc(shortProduct(s.product))}</span>
           <span>${esc(r.stig_id)}</span><span>${esc(r.vuln_id)}</span>${roleChip(r)}<span class="chip">${esc(t.name)}</span></div>
       </li>`;
     }).join("");
     $("#list").insertAdjacentHTML("beforeend", html);
+    paintTags($("#list"));
     state.shown += slice.length;
     const more = $("#moreBtn");
     more.hidden = state.shown >= state.results.length;
@@ -365,7 +384,9 @@
         <div class="d-ids"><span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
           <span class="chip ${s.family}">${esc(s.product)} ${esc(s.label)}</span>
           <code>${esc(r.vuln_id)}</code><code>${esc(r.stig_id)}</code><code>${esc(r.id)}</code>${roleChip(r)}</div>
-        <h2>${esc(r.title)}</h2>
+        <h2>${tagBadges(r)}${esc(r.title)}</h2>
+        ${r._tags.map(([t, notes]) => `<p class="tag-callout" data-tagcolor="${esc(tagDef[t].color)}"><span class="tag-badge" data-tagcolor="${esc(tagDef[t].color)}">${esc(tagDef[t].label)}</span>
+          <b>${esc(tagDef[t].name)}</b>${notes.length ? `: ${esc(notes.join("; "))}` : ""}</p>`).join("")}
         <div class="d-ids">${r.topics.map((t) => `<span class="chip topic" data-topic="${esc(t)}" title="Filter by this topic">${esc(D.topics[t].name)}</span>`).join("")}
           ${r.ccis.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}
           ${nist5 ? `<span class="chip" title="NIST SP 800-53 Rev 5">800-53r5: ${esc(nist5)}</span>` : ""}</div>
@@ -378,6 +399,19 @@
       ${body}${eqHtml}
       <p class="disclaimer">Check/fix procedures, vulnerability discussion and CCI definitions are quoted from DISA. Topic explanations,
       threat context and plain-language text are STIG Explorer guidance. The DISA STIG remains the authoritative source.</p>`;
+    paintTags($("#detail"));
+  }
+
+  function tagBadges(r) {
+    return r._tags.map(([t]) => `<span class="tag-badge" data-tagcolor="${esc(tagDef[t].color)}" title="${esc(tagDef[t].name)}">${esc(tagDef[t].label)}</span>`).join("");
+  }
+
+  // Tag colors come from the tag files. They're applied through the CSSOM rather than inline
+  // style attributes so the server's Content-Security-Policy (style-src 'self') allows them.
+  function paintTags(el) {
+    el.querySelectorAll("[data-tagcolor]").forEach((n) => {
+      if (/^#[0-9a-f]{6}$/i.test(n.dataset.tagcolor)) n.style.setProperty("--tag", n.dataset.tagcolor);
+    });
   }
 
   function ruleMarkdown(r) {
@@ -385,7 +419,7 @@
     const t = D.topics[r.topics[0]];
     const p = r.platform;
     const set = r.settings.filter((x) => x.type !== "command").map((x) => `- ${TYPE_SHORT[x.type]}: \`${x.target}\` → \`${x.name}\` = ${x.value}`).join("\n");
-    return `## ${r.vuln_id} · ${r.stig_id} · ${SEV_LABEL[r.severity]}: ${r.title}
+    return `## ${r._tagLabels.map((l) => `[${l}] `).join("")}${r.vuln_id} · ${r.stig_id} · ${SEV_LABEL[r.severity]}: ${r.title}
 *${s.product} ${s.label}* | CCI: ${r.ccis.join(", ")} | NIST 800-53 Rev 5: ${r._nist.rev5.join(", ") || "n/a"} | Rev 3: ${r._nist.rev3.join(", ") || "n/a"}
 
 ### General audience
@@ -471,7 +505,7 @@ ${t.pro}
   // ---------------------------------------------------------------- CSV
   function exportCsv() {
     const cols = ["STIG", "Release", "Vuln ID", "STIG ID", "Rule ID", "Severity", "Title", "Plain language", "Topic", "SRG", "Server role", "CCI",
-      "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Validation commands", "Check", "Fix"];
+      "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Validation commands", "Check", "Fix", "Tags"];
     const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const lines = [cols.map(q).join(",")];
     for (const r of state.results) {
@@ -480,7 +514,7 @@ ${t.pro}
         r.topics.map((t) => D.topics[t].name).join("; "), r.srg, ROLE_LABEL[r.role] || (r.role ? "All servers" : ""), r.ccis.join("; "), r._nist.rev5.join("; "), r._nist.rev4.join("; "),
         r._nist.rev3.join("; "), r.settings.filter((x) => x.type !== "command").map((x) => `${x.target} | ${x.name} = ${x.value}`).join("\n"),
         (r.validate || []).map((v) => `[${SHELL_LABEL[v.shell]}] ${v.cmd}`).join("\n"),
-        r.check, r.fix].map(q).join(","));
+        r.check, r.fix, r._tags.map(([t, n]) => tagDef[t].label + (n.length ? ` (${n.join("; ")})` : "")).join("; ")].map(q).join(","));
     }
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -500,6 +534,7 @@ ${t.pro}
     if (state.control) parts.push(`NIST ${state.rev} control ${state.control}`);
     if (state.impl) parts.push("implemented via " + state.impl);
     if (state.doc) parts.push("documentable only");
+    if (state.tags.size) parts.push("tags " + [...state.tags].map((t) => tagDef[t].label).join("/"));
     return parts.join("; ");
   }
 
@@ -581,6 +616,10 @@ ${t.pro}
     $("#controlFilter").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => { state.control = e.target.value.trim(); runSearch(); }, 150); });
     $("#docFilter").addEventListener("change", (e) => { state.doc = e.target.checked; runSearch(); });
     $("#roleFilter").addEventListener("change", (e) => { state.role = e.target.value; runSearch(); });
+    $("#tagFilters").addEventListener("change", (e) => {
+      const t = e.target.dataset.tag; if (!t) return;
+      e.target.checked ? state.tags.add(t) : state.tags.delete(t); runSearch();
+    });
     $("#revSeg").addEventListener("click", (e) => {
       const rev = e.target.dataset.rev; if (!rev) return;
       state.rev = rev;
@@ -592,6 +631,7 @@ ${t.pro}
       state.q = ""; $("#q").value = ""; state.topic = ""; $("#topicFilter").value = ""; state.impl = ""; $("#implFilter").value = "";
       state.family = ""; state.control = ""; $("#controlFilter").value = ""; state.doc = false; $("#docFilter").checked = false;
       state.role = ""; $("#roleFilter").value = "";
+      state.tags.clear(); $$("#tagFilters input").forEach((i) => (i.checked = false));
       state.stigs = new Set(D.stigs.map((s) => s.key)); state.sev = new Set(["high", "medium", "low"]);
       $$("#stigFilters input, #sevFilters input").forEach((i) => (i.checked = true));
       store.set("stigs", [...state.stigs]); buildFamilies(); runSearch();

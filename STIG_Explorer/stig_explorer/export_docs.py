@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import build
+from . import build, tags as tagmod
 
 ROOT = build.ROOT
 DOCS = ROOT / "docs"
@@ -57,6 +57,11 @@ ROLE_LABEL = {"dc": "Domain controller only", "ms": "Member server only", "both"
 SHELL_LABEL = {"powershell": "PowerShell", "cmd": "CMD", "bash": "Bash"}
 SRC_LABEL = {"disa": "from DISA check text", "generated": "generated from the setting", "curated": "STIG Explorer command"}
 NO_VALIDATION = "No single command can validate this rule. It is a procedural or manual check; follow the DISA check procedure."
+
+
+def tag_text(data: dict, r: dict) -> str:
+    defs = data.get("tag_defs", {})
+    return ", ".join(f"{defs[t]['label']} ({defs[t]['name']})" for t in r.get("tags", []) if t in defs)
 
 
 def sections(data: dict, key: str, dc_view: bool = False) -> list[tuple[str, str, list[dict]]]:
@@ -102,7 +107,8 @@ def rule_markdown(data: dict, r: dict, heading: str = "##") -> str:
     plat = r["platform"]
     sev_label, sev_plain = data["meta"]["severity_plain"][r["severity"]]
     L = []
-    L.append(f"{heading} {r['vuln_id']} · {r['stig_id']} · {r['cat']}: {_t(r['title'])}")
+    badges = "".join(f"[{data['tag_defs'][t]['label']}] " for t in r.get("tags", []) if t in data.get("tag_defs", {}))
+    L.append(f"{heading} {badges}{r['vuln_id']} · {r['stig_id']} · {r['cat']}: {_t(r['title'])}")
     L.append("")
     L.append("| Field | Value |\n|---|---|")
     L.append(f"| Rule ID | `{r['id']}` |")
@@ -115,6 +121,8 @@ def rule_markdown(data: dict, r: dict, heading: str = "##") -> str:
     L.append(f"| Implemented via | {', '.join(r['setting_cats'])} |")
     if r.get("role"):
         L.append(f"| Server role | {ROLE_LABEL[r['role']]} |")
+    if r.get("tags"):
+        L.append(f"| Tags | **{_md_escape_cell(tag_text(data, r))}** |")
     L.append("")
 
     # Level 3 - generic
@@ -275,6 +283,11 @@ def stig_markdown(data: dict, key: str, dc_view: bool = False) -> str:
     for tid, n in tops.most_common():
         L.append(f"| {data['topics'][tid]['name']} | {n} |")
     L.append("")
+    for t in data.get("tag_defs", {}).values():
+        tagged = [r for r in rules if t["id"] in r.get("tags", [])]
+        if tagged:
+            L.append(f"**{t['label']} ({t['name']}):** {len(tagged)} rules: " + ", ".join(r["stig_id"] for r in tagged))
+            L.append("")
     if len(secs) > 1:
         L.append("| Section | Rules |\n|---|---|")
         for heading, _, rs in secs:
@@ -477,7 +490,8 @@ def rule_word(w: WordWriter, data: dict, r: dict):
     primary = topics[0]
     plat = r["platform"]
     sev_label, sev_plain = data["meta"]["severity_plain"][r["severity"]]
-    w.h(f"{r['vuln_id']} · {r['stig_id']} · {r['cat']}: {r['title']}", 2)
+    badges = "".join(f"[{data['tag_defs'][t]['label']}] " for t in r.get("tags", []) if t in data.get("tag_defs", {}))
+    w.h(f"{badges}{r['vuln_id']} · {r['stig_id']} · {r['cat']}: {r['title']}", 2)
     rows = [["Rule ID", r["id"]], ["Severity", f"{r['cat']} ({r['severity']})"], ["SRG", r["srg"]],
             ["Topic", ", ".join(t["name"] for t in topics)], ["CCI", ", ".join(r["ccis"]) or "n/a"],
             ["NIST 800-53 Rev 5", ", ".join(nist(data, r, "rev5")) or "n/a"],
@@ -486,6 +500,8 @@ def rule_word(w: WordWriter, data: dict, r: dict):
             ["Implemented via", ", ".join(r["setting_cats"])]]
     if r.get("role"):
         rows.append(["Server role", ROLE_LABEL[r["role"]]])
+    if r.get("tags"):
+        rows.append(["Tags", tag_text(data, r)])
     w.table(["Field", "Value"], rows)
 
     w.h(LEVELS[0][1], 3)
@@ -565,6 +581,10 @@ def stig_word(data: dict, key: str, path: Path, dc_view: bool = False):
                                     ["CAT III (low)", sev["low"]]])
     tops = collections.Counter(r["topics"][0] for r in rules)
     w.table(["Topic", "Rules"], [[data["topics"][t]["name"], n] for t, n in tops.most_common()])
+    for t in data.get("tag_defs", {}).values():
+        tagged = [r for r in rules if t["id"] in r.get("tags", [])]
+        if tagged:
+            w.p(", ".join(r["stig_id"] for r in tagged), f"{t['label']} ({t['name']}), {len(tagged)} rules:")
     if len(secs) > 1:
         w.table(["Section", "Rules"], [[h, len(rs)] for h, _, rs in secs])
     for heading, intro, rs in secs:
@@ -637,6 +657,7 @@ def guide_word(data: dict, path: Path):
 
 def export_all(data: dict | None = None, stigs: list[str] | None = None, word: bool = True) -> None:
     data = data or build.load()
+    tagmod.apply(data)
     keys = stigs or [s["key"] for s in data["stigs"]]
     (DOCS / "markdown").mkdir(parents=True, exist_ok=True)
     gpath = DOCS / "STIG_Explorer_Guide.md"

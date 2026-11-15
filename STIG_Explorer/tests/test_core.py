@@ -300,3 +300,48 @@ class ScriptExportTests(unittest.TestCase):
                f"'{self.tmp / 't.ps1'}',[ref]$t,[ref]$e);$e.Count")
         out = subprocess.run(["pwsh", "-NoProfile", "-Command", cmd], capture_output=True, text=True, check=True)
         self.assertEqual(out.stdout.strip(), "0")
+
+
+class TagTests(unittest.TestCase):
+    """Custom tag files (tags/*.csv), e.g. FMCC."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        from stig_explorer import tags
+        if not build.OUT.exists():
+            raise unittest.SkipTest("data file not built")
+        cls.tags = tags
+        cls.data = build.load()
+        cls.dir = Path(tempfile.mkdtemp())
+        (cls.dir / "FMCC.csv").write_text(
+            "# label: FMCC\n# name: Federally Mandated Critical Control\n# color: #b71c1c\nid,note\n"
+            "V-257984,source p.4\nCCI-000048,\nIA-5(1),\nrev3:AC-17,\nV-999999,typo\nbanana,\n", encoding="utf-8")
+        cls.out = tags.compile_tags(cls.data, cls.dir, cls.dir / "tags.js", quiet=True)
+
+    def test_matching(self):
+        m = self.tags._matcher(self.data)
+        self.assertEqual(len(m("V-257984")[1]), 1)
+        self.assertEqual(len(m("RHEL-09-255040")[1]), 1)
+        self.assertGreater(len(m("CCI-000048")[1]), 10)
+        self.assertEqual(m("IA-5(1)")[1], m("IA-5 (1)")[1])
+        self.assertEqual(m("AC-1")[1], [])               # must not match AC-10..AC-17
+        self.assertEqual(m("banana")[0], "unrecognised")
+
+    def test_compiled_output(self):
+        self.assertEqual(self.out["tags"][0]["label"], "FMCC")
+        rid = next(r["id"] for r in self.data["rules"] if r["vuln_id"] == "V-257984")
+        self.assertIn(["fmcc", ["source p.4"]], self.out["rules"][rid])
+        self.assertTrue((self.dir / "tags.js").read_text().startswith("window.STIG_TAGS = "))
+
+    def test_apply_and_server_filter(self):
+        from stig_explorer import server
+        idx = server.Index(build.load(), self.out)
+        res = idx.search({"tag": "fmcc", "limit": 500})
+        self.assertEqual(res["total"], self.out["tags"][0]["count"])
+        self.assertEqual(idx.search({"tag": "unknown"})["total"], 0)
+
+    def test_shipped_template_parses(self):
+        meta, rows = self.tags.parse_file(build.ROOT / "tags" / "FMCC.csv")
+        self.assertEqual(meta["label"], "FMCC")
+        self.assertEqual(rows, [])

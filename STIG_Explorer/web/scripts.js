@@ -26,6 +26,7 @@
   const psq = (s) => "'" + String(s ?? "").replace(/'/g, "''") + "'";            // PowerShell single-quoted
   const shq = (s) => "'" + String(s ?? "").replace(/'/g, "'\\''") + "'";          // POSIX single-quoted
   const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+  const tagged = (r) => ((r._tagLabels || []).length ? `[${r._tagLabels.join(", ")}] ` : "") + oneLine(r.title);
 
   // A DISA-quoted PowerShell command is embedded as code, so it must parse. Reject
   // anything with unbalanced quotes/brackets or a dangling operator (truncated text).
@@ -140,7 +141,7 @@
       manual.forEach((m) => manualAll.push([r, m]));
       if (!runnable.length) continue;
       L.push("");
-      L.push(`if (Start-Check ${psq(r.stig)} ${psq(r.role || "")} ${psq(r.vuln_id + " / " + r.stig_id)} ${psq(SEV[r.severity])} ${psq(oneLine(r.title))}) {`);
+      L.push(`if (Start-Check ${psq(r.stig)} ${psq(r.role || "")} ${psq(r.vuln_id + " / " + r.stig_id)} ${psq(SEV[r.severity])} ${psq(tagged(r))}) {`);
       for (const v of runnable) {
         if (v.shell === "powershell") L.push(`    Invoke-PSCheck ${psq(oneLine(v.expect))} { ${v.cmd} }`);
         else L.push(`    Invoke-CmdCheck ${psq(oneLine(v.expect))} ${psq(v.cmd)}`);
@@ -207,7 +208,7 @@
       manual.forEach((m) => manualAll.push([r, m]));
       if (!runnable.length) continue;
       L.push("");
-      L.push(`if begin ${shq(r.stig)} ${shq(r.vuln_id + " / " + r.stig_id)} ${shq(SEV[r.severity])} ${shq(oneLine(r.title))}; then`);
+      L.push(`if begin ${shq(r.stig)} ${shq(r.vuln_id + " / " + r.stig_id)} ${shq(SEV[r.severity])} ${shq(tagged(r))}; then`);
       for (const v of runnable) {
         L.push(`check ${shq(oneLine(v.expect))} <<'STIGX_EOF'`);
         L.push(v.cmd);

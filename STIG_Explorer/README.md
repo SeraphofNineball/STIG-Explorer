@@ -116,6 +116,42 @@ automatically).
 - **Topics** shows each security topic at the chosen level. **Export CSV** exports the filtered rule set.
 - **Links:** `index.html#rule=V-257984&level=admin`, `#q=faillock`, `#view=topics`.
 
+## Custom tags (FMCC)
+
+DISA's STIG files don't mark any rule as a *Federally Mandated Critical Control* (FMCC), so STIG Explorer lets you
+maintain that list (or any other, such as an AO priority list or a contract subset) yourself. Each CSV file in
+`tags/` defines one tag. `tags/FMCC.csv` is provided as an empty template.
+
+1. Open `tags/FMCC.csv` (Excel or any editor) and add one identifier per row, with an optional note (for example the
+   source document and paragraph):
+
+   ```csv
+   id,note
+   V-257984,Source doc para 3.2
+   WN22-SO-000150,
+   CCI-000048,All logon-banner rules
+   IA-5(1),
+   rev3:AC-17,
+   ```
+
+   | Identifier | Tags |
+   |---|---|
+   | `V-257984` / `RHEL-09-255040` / `SV-257984r…_rule` | that rule |
+   | `CCI-000048` | every rule citing the CCI |
+   | `AC-7`, `IA-5(1)` | every rule mapped to that NIST 800-53 Rev 5 control (`rev3:` / `rev4:` prefixes use those revisions) |
+   | `SRG-OS-000480-GPOS-00227` | every rule under that SRG requirement |
+
+2. Run `python -m stig_explorer.tags`. This doesn't need internet access or the DISA zips. It reports any IDs that
+   matched nothing, so typos are caught.
+3. Reload the app. Tagged rules get a colored **FMCC** badge in the results and on the rule page, with your note shown.
+   There's also a **Tags** filter, and searching `fmcc` finds them. Tags appear in CSV and script exports, in the
+   Word/Markdown documents (re-run `python -m stig_explorer.export_docs`) and in the API (`/api/tags`,
+   `/api/search?tag=fmcc`).
+
+To add another tag, copy `FMCC.csv` to a new file and change the `# label`, `# name`, `# color` and `# description`
+header lines. The container serves the compiled `web/data/tags.js`, so rebuild the image after recompiling, or uncomment
+the tags volume in `docker-compose.yml` to pick up changes without a rebuild.
+
 ## JSON API (server/container only)
 
 | Endpoint | Description |
@@ -123,7 +159,8 @@ automatically).
 | `GET /api/health` | Status, rule count, data build time |
 | `GET /api/stigs` | STIGs loaded, with release and benchmark date |
 | `GET /api/topics` | Topic knowledge base |
-| `GET /api/search?q=&stig=RHEL_9,WIN_11&severity=high&topic=ssh&nist=AC-7&rev=rev5&limit=50&offset=0` | Full-text search (SQLite FTS5, BM25-ranked) with filters |
+| `GET /api/tags` | Custom tags (e.g. FMCC) and how many rules each covers |
+| `GET /api/search?q=&stig=RHEL_9,WIN_11&severity=high&topic=ssh&nist=AC-7&rev=rev5&tag=fmcc&limit=50&offset=0` | Full-text search (SQLite FTS5, BM25-ranked) with filters |
 | `GET /api/rule/<SV-rule-id \| V-id \| STIG-id>` | Full rule with topic and CCI details |
 
 ## How the explanations are produced
@@ -154,8 +191,10 @@ STIG_Explorer/
 │   ├── build.py        # orchestrates → web/data/stig_data.js
 │   ├── export_docs.py  # Markdown + Word documents
 │   ├── validate.py     # command-line validation commands per rule
+│   ├── tags.py         # compile tags/*.csv (e.g. FMCC) -> web/data/tags.js
 │   └── server.py       # stdlib web server + JSON API (SQLite FTS5)
 ├── web/                # index.html, app.js, scripts.js (script export), style.css, data/stig_data.js
+├── tags/               # editable tag lists (FMCC.csv template)
 ├── docs/               # generated guide and per-STIG .md/.docx
 ├── data/raw/           # DISA source zips (git-ignored)
 ├── tests/              # python -m unittest discover -s tests

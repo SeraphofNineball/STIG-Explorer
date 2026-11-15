@@ -9,7 +9,8 @@ API:
     GET /api/health
     GET /api/stigs
     GET /api/topics
-    GET /api/search?q=<fts query>&stig=RHEL_9&severity=high&topic=ssh&nist=AC-7&rev=rev5&limit=50&offset=0
+    GET /api/tags
+    GET /api/search?q=<fts query>&stig=RHEL_9&severity=high&topic=ssh&nist=AC-7&rev=rev5&tag=fmcc&limit=50&offset=0
     GET /api/rule/<rule id | V-id | STIG id>
 """
 
@@ -28,7 +29,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import build
+from . import build, tags
 
 WEB = build.ROOT / "web"
 
@@ -42,8 +43,9 @@ SECURITY_HEADERS = {
 
 
 class Index:
-    def __init__(self, data: dict):
-        self.data = data
+    def __init__(self, data: dict, tagdata: dict | None = None):
+        self.data = tags.apply(data, tagdata)
+        self.tag_notes = (tagdata or tags.load())["rules"]
         self.rules = {r["id"]: r for r in data["rules"]}
         self.alias = {}
         for r in data["rules"]:
@@ -88,6 +90,13 @@ class Index:
             if vals:
                 where.append(f"{col} IN ({','.join('?' * len(vals))})")
                 args += vals
+        if tg := params.get("tag"):
+            wanted = {t for t in tg.split(",") if t}
+            tagged = [rid for rid, r in self.rules.items() if wanted & set(r["tags"])]
+            if not tagged:
+                return {"total": 0, "offset": 0, "limit": 0, "results": []}
+            where.append(f"m.rid IN ({','.join('?' * len(tagged))})")
+            args += tagged
         if t := params.get("topic"):
             where.append("(',' || m.topics || ',') LIKE ?")
             args.append(f"%,{t},%")
@@ -121,7 +130,7 @@ class Index:
 
     def summary(self, r: dict) -> dict:
         return {k: r[k] for k in ("id", "vuln_id", "stig_id", "stig", "severity", "cat", "title", "plain",
-                                  "topics", "ccis")} | {"nist_rev5": r["nist"]["rev5"]}
+                                  "topics", "ccis", "tags")} | {"nist_rev5": r["nist"]["rev5"]}
 
     def rule(self, key: str) -> dict | None:
         rid = key if key in self.rules else self.alias.get(key.upper())
@@ -130,6 +139,7 @@ class Index:
         r = dict(self.rules[rid])
         r["topic_details"] = {t: self.data["topics"][t] for t in r["topics"]}
         r["cci_details"] = {c: self.data["ccis"].get(c, {}) for c in r["ccis"]}
+        r["tag_details"] = [self.data["tag_defs"][t] | {"notes": n} for t, n in self.tag_notes.get(rid, [])]
         return r
 
 
@@ -163,6 +173,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"status": "ok", "rules": len(idx.rules), "generated": idx.data["meta"]["generated"]})
             if url.path == "/api/stigs":
                 return self._json(idx.data["stigs"])
+            if url.path == "/api/tags":
+                return self._json(list(idx.data["tag_defs"].values()))
             if url.path == "/api/topics":
                 return self._json(idx.data["topics"])
             if url.path == "/api/search":

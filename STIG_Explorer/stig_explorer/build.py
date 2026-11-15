@@ -204,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         fetch.fetch_all(args.raw)
     print(f"Parsing {args.raw} ...")
     data = build(args.raw, args.out)
+    from . import tags
+    tags.compile_tags(data)
     if args.docs:
         from . import export_docs
         export_docs.export_all(data)
