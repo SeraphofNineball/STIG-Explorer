@@ -135,6 +135,9 @@ def _desc_fields(raw: str) -> dict[str, str]:
 def stig_key(benchmark_id: str, title: str) -> str:
     """A short stable key such as RHEL_9 or WIN_SERVER_2022."""
     t = title
+    m = re.search(r"Ubuntu (\d+)\.(\d+)", t)
+    if m:
+        return f"UBUNTU_{m.group(1)}_{m.group(2)}"
     m = re.search(r"Red Hat Enterprise Linux (\d+)", t)
     if m:
         return f"RHEL_{m.group(1)}"
@@ -151,8 +154,19 @@ def product_name(title: str) -> str:
     return re.sub(r"\s*Security Technical Implementation Guide\s*$", "", title).strip()
 
 
+def family_of(title: str) -> str:
+    """OS family used for family-specific admin guidance: rhel | ubuntu | windows."""
+    if "Ubuntu" in title:
+        return "ubuntu"
+    if "Red Hat" in title:
+        return "rhel"
+    if "Windows" in title:
+        return "windows"
+    return "other"
+
+
 def platform_of(title: str) -> str:
-    if "Red Hat" in title or "Linux" in title:
+    if "Red Hat" in title or "Linux" in title or "Ubuntu" in title:
         return "linux"
     if "Windows" in title:
         return "windows"
@@ -205,6 +219,7 @@ def parse_benchmark(data: bytes, source_name: str = "") -> dict:
         "title": title,
         "product": product_name(title),
         "platform": platform_of(title),
+        "family": family_of(title),
         "version": version,
         "release": rel.group(1) if rel else "",
         "label": f"V{version}R{rel.group(1)}" if rel else f"V{version}",

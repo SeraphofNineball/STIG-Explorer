@@ -132,6 +132,7 @@ _CFG_PATH = re.compile(r"(/(?:etc|usr/lib|usr/share|boot|root)/[\w./*@+:-]*[\w*]
 _SYSCTL = re.compile(r"^((?:kernel|net|fs|vm|user|crypto|dev)\.[\w.\-/*]+)\s*=\s*(\S+)$")
 _AUDIT = re.compile(r"^(-[aw]\s.+|-e\s+2|--loginuid-immutable|-f\s+\d|-b\s+\d+)$")
 _ROOT_CMDS = (
+    "aide|aideinit|apt|apt-get|dpkg|pam-auth-update|ufw|update-grub|grub-mkpasswd-pbkdf2|aa-enforce|aa-status|"
     "aide|auditctl|augenrules|authconfig|authselect|awk|blkid|cat|chage|chattr|chcon|chgrp|chmod|chown|cp|dconf|"
     "df|dnf|dracut|echo|find|fips-mode-setup|firewall-cmd|grep|grub2-mkconfig|grub2-setpassword|grubby|ip|ln|ls|"
     "mkdir|modprobe|more|mount|mv|nmcli|passwd|postconf|restorecon|rm|rpm|sed|semanage|service|setfacl|setsebool|"
@@ -140,7 +141,7 @@ _ROOT_CMDS = (
 # "$ cmd" / "$ sudo cmd" (RHEL 8+) or "# cmd" root prompt (RHEL 7). The root form
 # only matches known commands so "# comment" lines in config examples are ignored.
 _CMD = re.compile(rf"^(?:\$\s*|#\s+(?=(?:{_ROOT_CMDS})\b|/usr/))(?:sudo\s+)?(.+)$")
-_PKG = re.compile(r"\b(?:dnf|yum)\s+(?:-y\s+)?(install|remove|erase)\s+(?:-y\s+)?([\w.+\- ]+)")
+_PKG = re.compile(r"\b(?:dnf|yum|apt-get|apt)\s+(?:-y\s+)?(?:--purge\s+)?(install|remove|erase|purge)\s+(?:-y\s+)?([\w.+\- ]+)")
 _SVC = re.compile(r"\bsystemctl\s+((?:enable|disable|mask|unmask|start|stop)(?:\s+--now)?)\s+(?:--now\s+)?([\w@.\-]+)")
 _PERM = re.compile(r"^(chmod|chown|chgrp|setfacl|restorecon|semanage|setsebool|chcon)\s+(.+)$")
 _DCONF_SECTION = re.compile(r"^\[(org/[\w/.\-]+)\]$")
@@ -199,9 +200,10 @@ def _linux(fix: str) -> list[dict]:
             cmd = m.group(1).strip()
             if pk := _PKG.search(cmd):
                 action = "Installed" if pk.group(1) == "install" else "Removed"
+                mgr = re.search(r"\b(dnf|yum|apt)", cmd).group(1)
                 for name in pk.group(2).split():
                     if not name.startswith("-"):
-                        out.append({"type": "package", "target": "dnf", "name": name, "value": action})
+                        out.append({"type": "package", "target": mgr, "name": name, "value": action})
                 continue
             if sv := _SVC.search(cmd):
                 out.append({"type": "service", "target": "systemd", "name": sv.group(2),

@@ -11,7 +11,7 @@ import re
 from . import settings, topics
 
 _PRODUCT = re.compile(
-    r"(?:The )?(?:RHEL ?\d+|Red Hat Enterprise Linux(?: ?\d+)?|(?:Microsoft )?Windows(?: Server)? ?(?:\d{4}|1[01])|Window 10|Windows 2016)"
+    r"(?:The )?(?:RHEL ?\d+|Red Hat Enterprise Linux(?: ?\d+)?|(?:Canonical )?Ubuntu(?: \d\d\.\d\d)?(?: LTS)?|(?:Microsoft )?Windows(?: Server)? ?(?:\d{4}|1[01])|Window 10|Windows 2016)"
     r"(?P<os> operating systems?| systems?)?",
     re.I,
 )

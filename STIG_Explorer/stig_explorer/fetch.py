@@ -26,6 +26,10 @@ PRODUCTS = [
     "U_RHEL_8",
     "U_RHEL_9",
     "U_RHEL_10",
+    "U_CAN_Ubuntu_18-04_LTS",  # sunset by DISA; final release V2R15
+    "U_CAN_Ubuntu_20-04_LTS",
+    "U_CAN_Ubuntu_22-04_LTS",
+    "U_CAN_Ubuntu_24-04_LTS",
     "U_MS_Windows_10",
     "U_MS_Windows_11",
     "U_MS_Windows_Server_2016",

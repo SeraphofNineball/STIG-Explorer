@@ -99,7 +99,7 @@ class Rhel7FormatTests(unittest.TestCase):
                 "Edit the file:\n\n     # Set this to true to lock the screen\n     lock-enabled=true\n\n"
                 "# systemctl enable --now auditd"}
         s = settings.extract(rule, "linux")
-        self.assertIn({"type": "package", "target": "dnf", "name": "aide", "value": "Installed"}, s)
+        self.assertIn({"type": "package", "target": "yum", "name": "aide", "value": "Installed"}, s)
         self.assertTrue(any(x["type"] == "service" and x["name"] == "auditd" for x in s))
         self.assertFalse(any(x["name"].startswith("Set this") for x in s))
 
@@ -186,3 +186,67 @@ class DataAndSearchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValidationTests(unittest.TestCase):
+    def test_registry_commands(self):
+        from stig_explorer import validate
+        rule = dict(WIN_RULE, title="Anonymous enumeration of shares must be restricted.", platform="windows")
+        rule["settings"] = settings.extract(rule, "windows")
+        cmds = validate.commands(rule, "windows", "WIN_11", [])
+        text = "\n".join(c["cmd"] for c in cmds)
+        self.assertIn('reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa" /v "RestrictAnonymous"', text)
+        self.assertIn("Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Lsa'", text)
+
+    def test_user_right_uses_secedit_constant(self):
+        from stig_explorer import validate
+        rule = dict(UR_RULE, title="Add workstations to domain user right.", platform="windows")
+        rule["settings"] = settings.extract(rule, "windows")
+        cmds = validate.commands(rule, "windows", "WIN_SERVER_2022", [])
+        self.assertTrue(any("SeMachineAccountPrivilege" in c["cmd"] for c in cmds))
+
+    def test_audit_policy_uses_auditpol(self):
+        from stig_explorer import validate
+        rule = {"title": "Audit logon failures.", "platform": "windows", "check": "",
+                "fix": "Configure the policy value for Computer Configuration >> Windows Settings >> Security Settings >> "
+                       "Advanced Audit Policy Configuration >> System Audit Policies >> Logon/Logoff >> Audit Logon "
+                       'with "Failure" selected.'}
+        rule["settings"] = settings.extract(rule, "windows")
+        cmds = validate.commands(rule, "windows", "WIN_11", [])
+        self.assertEqual(cmds[0]["cmd"], 'auditpol /get /subcategory:"Logon"')
+        self.assertIn("Failure", cmds[0]["expect"])
+
+    def test_linux_sysctl_and_package(self):
+        from stig_explorer import validate
+        rule = dict(LINUX_RULE, title="x", platform="linux")
+        rule["settings"] = settings.extract(rule, "linux")
+        cmds = [c["cmd"] for c in validate.commands(rule, "rhel", "RHEL_9", [])]
+        self.assertIn("sysctl kernel.unprivileged_bpf_disabled", cmds)
+        pkg = {"title": "x", "platform": "linux", "check": "", "fix": "$ sudo apt-get install aide",
+               "settings": [{"type": "package", "target": "apt", "name": "aide", "value": "Installed"}]}
+        self.assertTrue(validate.commands(pkg, "ubuntu", "UBUNTU_22_04", [])[0]["cmd"].startswith("dpkg -l aide"))
+
+    def test_curated_windows(self):
+        from stig_explorer import validate
+        self.assertEqual(validate.windows_curated("Windows Server 2022 must have Secure Boot enabled.")[0]["cmd"],
+                         "Confirm-SecureBootUEFI")
+
+
+class RoleAndUbuntuTests(unittest.TestCase):
+    def test_server_role(self):
+        self.assertEqual(build.server_role({"stig_id": "WN22-DC-000010", "check": ""}), "dc")
+        self.assertEqual(build.server_role({"stig_id": "WN22-MS-000010", "check": ""}), "ms")
+        self.assertEqual(build.server_role({"stig_id": "WN22-SO-000010", "check": ""}), "both")
+
+    def test_ubuntu_key_and_title(self):
+        from stig_explorer import parse
+        self.assertEqual(parse.stig_key("x", "Canonical Ubuntu 22.04 LTS Security Technical Implementation Guide"),
+                         "UBUNTU_22_04")
+        self.assertEqual(parse.family_of("Canonical Ubuntu 22.04 LTS"), "ubuntu")
+        self.assertEqual(explain.plain_title("Ubuntu 22.04 LTS must enforce a minimum 15-character password length."),
+                         "This computer must enforce a minimum 15-character password length.")
+
+    def test_ubuntu_admin_text(self):
+        t = topics.TOPIC_BY_ID["firewall"]
+        self.assertIn("UFW", topics.topic_text(t, "admin", "linux", "ubuntu"))
+        self.assertIn("firewalld", topics.topic_text(t, "admin", "linux", "rhel"))

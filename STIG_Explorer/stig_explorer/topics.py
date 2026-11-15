@@ -74,7 +74,11 @@ TOPICS: list[dict] = [
             "linux": "RHEL centralizes crypto settings in system-wide crypto policies: 'fips-mode-setup --enable' (RHEL 8) or 'fips=1' on the kernel command line at install time (RHEL 9/10), then 'update-crypto-policies --set FIPS'. Back-end files under /etc/crypto-policies/back-ends/ (openssh, opensslcnf, bind, gnutls and others) are generated from the policy, and individual services such as sshd must be pointed at them rather than hard-coding algorithms. Verify with 'fips-mode-setup --check' and 'update-crypto-policies --show'.",
             "windows": "On Windows, 'System cryptography: Use FIPS compliant algorithms for encryption, hashing, and signing' (HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa\\FIPSAlgorithmPolicy\\Enabled) restricts Schannel and CNG to FIPS-approved algorithms. Related settings cover Kerberos encryption types and NTLM session security.",
         },
-        "impact": "Enabling FIPS mode can break applications that use non-approved algorithms (MD5 for non-security checksums, older Java and .NET code, legacy VPN or SSH clients). Enable it at install time where possible, because switching an existing RHEL 9/10 system into FIPS mode is not supported for production. Test interoperating systems before rollout.",
+        "impact": {
+            "linux": "Enabling FIPS mode can break applications that use non-approved algorithms (MD5 for non-security checksums, older Java code, legacy VPN or SSH clients). Enable it at install time where possible, because switching an existing RHEL 9/10 system into FIPS mode is not supported for production. Test interoperating systems before rollout.",
+            "ubuntu": "Enabling FIPS mode can break applications that use non-approved algorithms (MD5 for non-security checksums, older Java code, legacy VPN or SSH clients). FIPS packages require an Ubuntu Pro subscription and a reboot into the FIPS kernel, and the FIPS kernel may lag behind the general kernel's hardware enablement. Test interoperating systems before rollout.",
+            "windows": "Enabling FIPS mode can break applications that use non-approved algorithms (MD5 for non-security checksums, older .NET code, legacy VPN or RDP clients). Test interoperating systems and line-of-business applications before rollout.",
+        },
         "generic": "Encryption is how computers scramble information so eavesdroppers can't read it. Some older scrambling methods have been \"cracked\" and are no longer safe. This rule makes the computer use only methods the U.S. government has tested and approved, like requiring modern, certified locks instead of old ones that a locksmith can easily pick.",
     },
     {
@@ -652,6 +656,8 @@ def classify(title: str, body: str, platform: str, limit: int = 2) -> list[str]:
             hits.append(topic["id"])
         if len(hits) >= limit:
             break
+    if "user_rights" in hits and "services" in hits:
+        hits.remove("services")  # "Local Service"/"Network Service" are account names, not services
     if not hits:
         # Fallback: the fix text, minus command prefixes that mention sudo.
         body = re.sub(r"\$\s*sudo\s+", "$ ", body)
@@ -664,10 +670,11 @@ def classify(title: str, body: str, platform: str, limit: int = 2) -> list[str]:
     return hits or ["general_config"]
 
 
-def topic_text(topic: dict, field: str, platform: str) -> str:
+def topic_text(topic: dict, field: str, platform: str, family: str = "") -> str:
+    """Topic text for an OS family (rhel/ubuntu/windows), falling back to the platform."""
     v = topic.get(field, "")
     if isinstance(v, dict):
-        return v.get(platform) or next(iter(v.values()), "")
+        return v.get(family) or v.get(platform) or next(iter(v.values()), "")
     return v
 
 
@@ -736,3 +743,57 @@ def glossary_terms(text: str, limit: int = 4) -> list[dict]:
         if len(out) >= limit:
             break
     return out
+
+
+# ---------------------------------------------------------------------------
+# Ubuntu-specific system administrator guidance. Topics not listed here use the
+# generic "linux" text, which applies to both RHEL and Ubuntu.
+# ---------------------------------------------------------------------------
+
+UBUNTU_ADMIN: dict[str, str] = {
+    "fips_crypto": "Ubuntu provides FIPS 140-validated modules through Ubuntu Pro: 'pro enable fips-updates' (or 'fips'), then reboot into the FIPS kernel. Verify with 'cat /proc/sys/crypto/fips_enabled' (expect 1). sshd ciphers, MACs and key exchange algorithms are set explicitly in /etc/ssh/sshd_config, because Ubuntu has no RHEL-style system-wide crypto-policies.",
+    "account_lockout": "Ubuntu 22.04/24.04 use pam_faillock, configured in /etc/security/faillock.conf (deny, fail_interval, unlock_time, audit, silent, dir) and referenced from /etc/pam.d/common-auth (preauth/authfail lines) and common-account. Older releases used pam_tally2. Inspect with 'faillock --user <name>' and reset with 'faillock --user <name> --reset'.",
+    "password_complexity": "Install libpam-pwquality ('apt-get install libpam-pwquality'), set minlen, dcredit/ucredit/lcredit/ocredit, difok, dictcheck and enforcing in /etc/security/pwquality.conf, and make sure /etc/pam.d/common-password calls pam_pwquality.so (with retry=3). Ubuntu manages the PAM stack with 'pam-auth-update'.",
+    "credential_storage": "Ubuntu stores hashes in /etc/shadow. Set ENCRYPT_METHOD SHA512 in /etc/login.defs and make sure the pam_unix line in /etc/pam.d/common-password uses sha512 (with an appropriate rounds value). Existing hashes are only upgraded when users next change their passwords.",
+    "privileged_accounts": "Lock the root password ('passwd -l root') so administrators work through sudo, set 'PermitRootLogin no' and 'PermitEmptyPasswords no' for sshd, and remove 'nullok' from pam_unix in /etc/pam.d/common-auth and common-password so empty passwords are rejected.",
+    "software_minimization": "Remove packages with 'apt-get remove --purge <pkg>' (purge also deletes their configuration files) and verify with 'dpkg -l | grep <pkg>'. Check what else 'apt' plans to remove before confirming the transaction.",
+    "patching": "Patch from approved repositories with 'apt-get update && apt-get upgrade' (or 'unattended-upgrades' for automatic security updates). Review pending updates with 'apt list --upgradable'. Check the release with 'lsb_release -a' against Canonical's support lifecycle; an Ubuntu Pro subscription extends security maintenance (ESM).",
+    "integrity": "APT verifies repository signatures with the keys in /etc/apt/trusted.gpg.d/ and per-source 'signed-by' keyrings, so never add '[trusted=yes]' or '--allow-unauthenticated'. Install AIDE with 'apt-get install aide aide-common', initialize with 'aideinit', and configure rules in /etc/aide/aide.conf. A daily check runs from /etc/cron.daily/dailyaidecheck. 'dpkg --verify' checks installed files against package checksums.",
+    "app_control": "Ubuntu uses AppArmor rather than SELinux. Make sure the apparmor package is installed and enabled ('systemctl enable --now apparmor'), and check loaded profiles and their modes with 'aa-status'. Put profiles into enforce mode with 'aa-enforce /etc/apparmor.d/<profile>'. Application allowlisting beyond AppArmor needs an approved third-party tool.",
+    "file_permissions": "Check mode and ownership with 'stat -c \"%a %U %G %n\" <path>' and fix them with 'chmod', 'chown' and 'chgrp'. Find unowned files with 'find / -xdev -nouser -o -nogroup'. Default permissions for new files come from UMASK in /etc/login.defs. 'dpkg --verify' highlights packaged files that have changed.",
+    "boot_security": "Create a GRUB superuser password hash with 'grub-mkpasswd-pbkdf2' and add 'set superusers=\"<name>\"' and 'password_pbkdf2 <name> <hash>' to /etc/grub.d/40_custom (or 00_header), then run 'update-grub'. Kernel parameters go in GRUB_CMDLINE_LINUX in /etc/default/grub, followed by 'update-grub'. Disable Ctrl-Alt-Delete with 'systemctl mask ctrl-alt-del.target' and 'systemctl daemon-reload'.",
+    "memory_protection": "Set kernel tunables in /etc/sysctl.d/*.conf and apply them with 'sysctl --system'. Boot parameters are added to GRUB_CMDLINE_LINUX in /etc/default/grub, followed by 'update-grub' and a reboot. Disable core dumps through /etc/security/limits.conf ('* hard core 0') and /etc/systemd/coredump.conf.",
+    "firewall": "Ubuntu uses UFW (Uncomplicated Firewall) as the front end to nftables or iptables. Install and enable it with 'apt-get install ufw' and 'ufw enable', set default-deny with 'ufw default deny incoming', and allow only the required services ('ufw allow <port>/<proto>', or 'ufw limit ssh' for rate limiting). Review with 'ufw status verbose'.",
+    "pam_identity": "Ubuntu's PAM stacks are /etc/pam.d/common-auth, common-account, common-password and common-session. They are regenerated by 'pam-auth-update' from profiles in /usr/share/pam-configs/, so persistent changes belong in a custom profile there or must be re-checked after package updates. SSSD (if used) is configured in /etc/sssd/sssd.conf (mode 0600, owned by root).",
+    "smartcard_pki": "Ubuntu uses libpam-pkcs11 and opensc-pkcs11 for CAC/PIV login: a pam_pkcs11.so line in /etc/pam.d/common-auth, certificate mapping and OCSP/CRL policy in /etc/pam_pkcs11/pam_pkcs11.conf, and DoD CA certificates installed under /etc/ssl/certs (or /usr/local/share/ca-certificates followed by 'update-ca-certificates').",
+    "logon_interface": "On Ubuntu, GDM3 settings live in /etc/gdm3/ (for example 'AutomaticLoginEnable=false' in /etc/gdm3/custom.conf), and GNOME policy is managed through dconf databases in /etc/dconf/db/local.d/ with locks, followed by 'dconf update'. If no GUI is required, remove the desktop packages and set 'systemctl set-default multi-user.target'.",
+    "session_lock": "Set GNOME locking through dconf (org/gnome/desktop/screensaver lock-enabled=true, org/gnome/desktop/session idle-delay=uint32 900) with matching locks, followed by 'dconf update'. For console sessions, install 'vlock' so users can lock a terminal, and set TMOUT=900 (readonly) in /etc/profile.d/. SSH idle termination uses ClientAliveInterval/CountMax.",
+    "audit_storage": "auditd capacity and failure behavior are set in /etc/audit/auditd.conf (space_left, space_left_action, disk_full_action, action_mail_acct). Off-load with audisp-remote (package audispd-plugins, configured in /etc/audit/audisp-remote.conf or plugins.d/au-remote.conf) or forward with rsyslog. Install auditd with 'apt-get install auditd audispd-plugins'.",
+    "removable_media": "Block USB storage with 'install usb-storage /bin/false' and 'blacklist usb-storage' in /etc/modprobe.d/*.conf, and check with 'modprobe -n -v usb-storage'. Disable wireless interfaces with 'nmcli radio all off' or by blacklisting their driver modules. USBGuard is available from the Ubuntu archive ('apt-get install usbguard').",
+    "disk_encryption": "Ubuntu uses LUKS (dm-crypt) for block-device encryption, normally chosen at install time ('Encrypt the new Ubuntu installation'). Retrofitting encryption to an existing root volume generally requires a rebuild. Verify with 'lsblk -f' or 'cryptsetup status <mapping>'.",
+    "ssh": "sshd reads /etc/ssh/sshd_config and, on 22.04 and later, drop-ins in /etc/ssh/sshd_config.d/*.conf, which are included at the top of the main file so their values take precedence (first value wins). Validate with 'sshd -t', check the effective configuration with 'sshd -T | grep -i <keyword>', then 'systemctl reload ssh' (the unit is named 'ssh' on Ubuntu).",
+    "time_sync": "Ubuntu uses chrony (or systemd-timesyncd by default on some releases). For chrony, configure /etc/chrony/chrony.conf with 'server <DoD-time-source> iburst maxpoll 16' and 'makestep 1 -1', and disable systemd-timesyncd so the two don't conflict. Verify with 'chronyc sources -v' and 'timedatectl'.",
+    "privacy_cloud": "On Ubuntu, the equivalents are disabling Apport crash reporting ('systemctl disable --now apport'), the 'ubuntu-report' and popularity-contest data collection, MOTD news ('ENABLED=0' in /etc/default/motd-news), and GNOME online accounts if they're not approved.",
+    "general_config": "Apply the change as described in the fix text, then confirm it with the check procedure. Where a setting can be set in several places (a main config file and drop-ins), check that no later file overrides it. Automate with the DISA SCAP content or Ubuntu Security Guide ('usg fix disa_stig', available with Ubuntu Pro) to prevent drift.",
+}
+
+# Topics whose Linux guidance applies to Ubuntu unchanged except for the OS name.
+_SAME_ON_UBUNTU = ["banner", "password_lifecycle", "account_management", "smb_anonymous", "elevation",
+                   "audit_protection", "audit_events", "network_stack", "filesystem_mounts", "services",
+                   "backup_recovery", "antimalware", "remote_access"]
+
+for _tid, _txt in UBUNTU_ADMIN.items():
+    _t = TOPIC_BY_ID[_tid]
+    if not isinstance(_t["admin"], dict):
+        _t["admin"] = {"linux": _t["admin"], "windows": _t["admin"]}
+    _t["admin"]["ubuntu"] = _txt
+
+for _tid in _SAME_ON_UBUNTU:
+    _t = TOPIC_BY_ID[_tid]
+    _t["admin"]["ubuntu"] = re.sub(r"\bOn RHEL\b", "On Ubuntu", _t["admin"]["linux"])
+
+# The generic Linux text above is RHEL-specific; expose it under "rhel" too so
+# lookups by OS family find it (Ubuntu topics without an override fall back to "linux").
+for _t in TOPICS:
+    if isinstance(_t["admin"], dict) and "linux" in _t["admin"]:
+        _t["admin"].setdefault("rhel", _t["admin"]["linux"])

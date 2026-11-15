@@ -4,6 +4,7 @@ Outputs (under docs/):
     STIG_Explorer_Guide.md / .docx        Overview, topic reference (3 levels), STIG inventory
     markdown/<STIG>.md                    Every rule of one STIG with all three explanation levels
     word/<STIG>.docx                      Same content as Word
+    markdown|word/WIN_SERVER_*_DC.*       Domain controller view of each Windows Server STIG
 
     python -m stig_explorer.export_docs [--stig RHEL_9 ...] [--no-word]
 """
@@ -21,6 +22,8 @@ from . import build
 ROOT = build.ROOT
 DOCS = ROOT / "docs"
 
+GUIDE_OSES = [("linux", "rhel", "RHEL"), ("linux", "ubuntu", "Ubuntu"), ("windows", "windows", "Windows")]
+
 LEVELS = [
     ("generic", "Level 3: General Audience"),
     ("admin", "Level 2: System Administrator"),
@@ -34,10 +37,10 @@ def _t(s: str) -> str:
     return _CTRL.sub("", s or "")
 
 
-def topic_txt(topic: dict, field: str, platform: str) -> str:
+def topic_txt(topic: dict, field: str, platform: str, family: str = "") -> str:
     v = topic.get(field, "")
     if isinstance(v, dict):
-        return v.get(platform) or next(iter(v.values()), "")
+        return v.get(family) or v.get(platform) or next(iter(v.values()), "")
     return v
 
 
@@ -48,6 +51,30 @@ def nist(data: dict, rule: dict, rev: str) -> list[str]:
             if idx not in out:
                 out.append(idx)
     return out
+
+
+ROLE_LABEL = {"dc": "Domain controller only", "ms": "Member server only", "both": "All servers (DC and member)"}
+SHELL_LABEL = {"powershell": "PowerShell", "cmd": "CMD", "bash": "Bash"}
+SRC_LABEL = {"disa": "from DISA check text", "generated": "generated from the setting", "curated": "STIG Explorer command"}
+NO_VALIDATION = "No single command can validate this rule. It is a procedural or manual check; follow the DISA check procedure."
+
+
+def sections(data: dict, key: str, dc_view: bool = False) -> list[tuple[str, str, list[dict]]]:
+    """(heading, intro, rules) sections for a STIG document.
+
+    Windows Server STIGs are split by role; the DC view holds only rules that apply to domain controllers."""
+    rules = sorted((r for r in data["rules"] if r["stig"] == key), key=lambda r: r["stig_id"])
+    if not any(r.get("role") for r in rules):
+        return [("Rules", "", rules)]
+    dc = [r for r in rules if r["role"] == "dc"]
+    ms = [r for r in rules if r["role"] == "ms"]
+    both = [r for r in rules if r["role"] == "both"]
+    if dc_view:
+        return [("Domain controller-specific rules", "These rules apply only to domain controllers (STIG IDs with -DC-).", dc),
+                ("Rules common to all servers", "These rules apply to domain controllers and member servers alike.", both)]
+    return [("Rules for all servers", "These rules apply to every Windows Server, whether domain controller or member server.", both),
+            ("Domain controller-only rules", "Apply these in addition to the common rules on domain controllers (STIG IDs with -DC-).", dc),
+            ("Member server-only rules", "Apply these in addition to the common rules on member and standalone servers (STIG IDs with -MS-).", ms)]
 
 
 def setting_line(s: dict) -> tuple[str, str, str, str]:
@@ -86,6 +113,8 @@ def rule_markdown(data: dict, r: dict, heading: str = "##") -> str:
     for rev, label in (("rev5", "NIST 800-53 Rev 5"), ("rev4", "NIST 800-53 Rev 4"), ("rev3", "NIST 800-53 Rev 3")):
         L.append(f"| {label} | {_md_escape_cell(', '.join(nist(data, r, rev)) or 'n/a')} |")
     L.append(f"| Implemented via | {', '.join(r['setting_cats'])} |")
+    if r.get("role"):
+        L.append(f"| Server role | {ROLE_LABEL[r['role']]} |")
     L.append("")
 
     # Level 3 - generic
@@ -119,12 +148,26 @@ def rule_markdown(data: dict, r: dict, heading: str = "##") -> str:
         L.append(f"**Settings changed:** No single machine-readable setting. This is implemented via: "
                  f"{', '.join(r['setting_cats'])}. See the fix text.")
         L.append("")
-    L.append(f"**How it works:** {topic_txt(primary, 'admin', plat)}")
+    L.append("**Command-line validation:**")
+    L.append("")
+    if r.get("validate"):
+        for v in r["validate"]:
+            L.append(f"*{SHELL_LABEL[v['shell']]}* ({SRC_LABEL[v['src']]})")
+            L.append("")
+            L.append(_md_code(v["cmd"]))
+            if v["expect"]:
+                L.append("")
+                L.append(f"Expected: {_t(v['expect'])}")
+            L.append("")
+    else:
+        L.append(NO_VALIDATION)
+        L.append("")
+    L.append(f"**How it works:** {topic_txt(primary, 'admin', plat, r.get('os', ''))}")
     L.append("")
     if len(topics) > 1:
-        L.append(f"**Also related ({topics[1]['name']}):** {topic_txt(topics[1], 'admin', plat)}")
+        L.append(f"**Also related ({topics[1]['name']}):** {topic_txt(topics[1], 'admin', plat, r.get('os', ''))}")
         L.append("")
-    L.append(f"**Operational impact:** {topic_txt(primary, 'impact', plat)}")
+    L.append(f"**Operational impact:** {topic_txt(primary, 'impact', plat, r.get('os', ''))}")
     if r.get("potential_impacts"):
         L.append("")
         L.append(f"**DISA-noted potential impacts:** {_t(r['potential_impacts'])}")
@@ -195,15 +238,30 @@ def how_to_read_md() -> str:
     )
 
 
-def stig_markdown(data: dict, key: str) -> str:
+def _doc_title(stig: dict, dc_view: bool) -> str:
+    return f"{stig['product']} {'Domain Controller ' if dc_view else ''}STIG: Explained"
+
+
+def _dc_note(dc_view: bool) -> str:
+    if not dc_view:
+        return ""
+    return ("DISA publishes one STIG for each Windows Server version that covers both domain controllers and member "
+            "servers. This document contains only the rules that apply to a **domain controller**: the DC-specific "
+            "rules first, then the rules common to all servers. Member server-only rules are omitted.")
+
+
+def stig_markdown(data: dict, key: str, dc_view: bool = False) -> str:
     stig = next(s for s in data["stigs"] if s["key"] == key)
-    rules = sorted((r for r in data["rules"] if r["stig"] == key), key=lambda r: r["stig_id"])
+    secs = sections(data, key, dc_view)
+    rules = [r for _, _, rs in secs for r in rs]
     sev = collections.Counter(r["severity"] for r in rules)
     tops = collections.Counter(r["topics"][0] for r in rules)
-    L = [f"# {stig['product']} STIG: Explained",
+    L = [f"# {_doc_title(stig, dc_view)}",
          "",
          f"*{stig['title']}*, {stig['label']}, benchmark date {stig['date']}. "
          f"{len(rules)} rules. Generated by STIG Explorer {data['meta']['version']} on {data['meta']['generated']}.",
+         "",
+         _dc_note(dc_view),
          "",
          how_to_read_md(),
          "## Summary",
@@ -217,24 +275,33 @@ def stig_markdown(data: dict, key: str) -> str:
     for tid, n in tops.most_common():
         L.append(f"| {data['topics'][tid]['name']} | {n} |")
     L.append("")
-    L.append("## Rules")
-    L.append("")
-    for r in rules:
-        L.append(rule_markdown(data, r, heading="###"))
+    if len(secs) > 1:
+        L.append("| Section | Rules |\n|---|---|")
+        for heading, _, rs in secs:
+            L.append(f"| {heading} | {len(rs)} |")
+        L.append("")
+    for heading, intro, rs in secs:
+        L.append(f"## {heading}")
+        L.append("")
+        if intro:
+            L.append(f"*{intro}*")
+            L.append("")
+        for r in rs:
+            L.append(rule_markdown(data, r, heading="###"))
     return "\n".join(L)
 
 
 def guide_markdown(data: dict) -> str:
     rules = data["rules"]
-    L = ["# STIG Explorer: DISA STIG Configuration Guide (RHEL & Windows)",
+    L = ["# STIG Explorer: DISA STIG Configuration Guide (RHEL, Ubuntu & Windows)",
          "",
          f"Generated {data['meta']['generated']} from {data['meta']['source']}. "
          f"{len(rules)} rules across {len(data['stigs'])} STIGs.",
          "",
          "## Purpose",
          "",
-         "This guide explains what the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux "
-         "and Microsoft Windows desktop/server operating systems change on a system, and why. It goes with the STIG "
+         "This guide explains what the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux, "
+         "Canonical Ubuntu and Microsoft Windows desktop/server operating systems change on a system, and why. It goes with the STIG "
          "Explorer search application and the per-STIG detail documents (docs/markdown and docs/word).",
          "",
          how_to_read_md(),
@@ -245,6 +312,10 @@ def guide_markdown(data: dict) -> str:
         rs = [r for r in rules if r["stig"] == s["key"]]
         c = collections.Counter(r["severity"] for r in rs)
         L.append(f"| {s['product']} | {s['label']} | {s['date']} | {len(rs)} | {c['high']} | {c['medium']} | {c['low']} |")
+        if any(r.get("role") for r in rs):
+            d = [r for r in rs if r["role"] in ("dc", "both")]
+            c = collections.Counter(r["severity"] for r in d)
+            L.append(f"| ↳ {s['product']}: domain controller view | {s['label']} | {s['date']} | {len(d)} | {c['high']} | {c['medium']} | {c['low']} |")
     L += ["", "## NIST SP 800-53 revision mapping", "",
           "Each STIG rule cites one or more CCIs (Control Correlation Identifiers). DISA's CCI List maps each CCI to "
           "NIST SP 800-53 controls in Revision 3, Revision 4 and Revision 5, so the same rule can be traced to whichever "
@@ -270,10 +341,10 @@ def guide_markdown(data: dict) -> str:
         L.append("")
         L.append(f"**General audience:** {t['generic']}")
         L.append("")
-        for plat in ("linux", "windows"):
-            L.append(f"**System administrator ({'RHEL' if plat == 'linux' else 'Windows'}):** {topic_txt(t, 'admin', plat)}")
+        for plat, fam, label in GUIDE_OSES:
+            L.append(f"**System administrator ({label}):** {topic_txt(t, 'admin', plat, fam)}")
             L.append("")
-        L.append(f"**Operational impact:** {topic_txt(t, 'impact', 'linux')}")
+        L.append(f"**Operational impact:** {topic_txt(t, 'impact', 'linux', 'rhel')}")
         L.append("")
         L.append(f"**Cyber security professional:** {t['pro']}")
         if t["attack"]:
@@ -413,6 +484,8 @@ def rule_word(w: WordWriter, data: dict, r: dict):
             ["NIST 800-53 Rev 4", ", ".join(nist(data, r, "rev4")) or "n/a"],
             ["NIST 800-53 Rev 3", ", ".join(nist(data, r, "rev3")) or "n/a"],
             ["Implemented via", ", ".join(r["setting_cats"])]]
+    if r.get("role"):
+        rows.append(["Server role", ROLE_LABEL[r["role"]]])
     w.table(["Field", "Value"], rows)
 
     w.h(LEVELS[0][1], 3)
@@ -430,10 +503,19 @@ def rule_word(w: WordWriter, data: dict, r: dict):
     else:
         w.p(f"No single machine-readable setting. This is implemented via: {', '.join(r['setting_cats'])}. See the fix text.",
             "Settings changed:")
-    w.p(topic_txt(primary, "admin", plat), "How it works:")
+    w.p("", "Command-line validation:")
+    if r.get("validate"):
+        for v in r["validate"]:
+            w.p(f"({SRC_LABEL[v['src']]})", f"{SHELL_LABEL[v['shell']]}", italic=True)
+            w.code(v["cmd"])
+            if v["expect"]:
+                w.p(v["expect"], "Expected:")
+    else:
+        w.p(NO_VALIDATION, italic=True)
+    w.p(topic_txt(primary, "admin", plat, r.get('os', '')), "How it works:")
     if len(topics) > 1:
-        w.p(topic_txt(topics[1], "admin", plat), f"Also related ({topics[1]['name']}):")
-    w.p(topic_txt(primary, "impact", plat), "Operational impact:")
+        w.p(topic_txt(topics[1], "admin", plat, r.get('os', '')), f"Also related ({topics[1]['name']}):")
+    w.p(topic_txt(primary, "impact", plat, r.get('os', '')), "Operational impact:")
     if r.get("potential_impacts"):
         w.p(r["potential_impacts"], "DISA-noted potential impacts:")
     w.p("", "Check procedure (DISA):")
@@ -465,12 +547,15 @@ def rule_word(w: WordWriter, data: dict, r: dict):
         w.p("Yes. A deviation may be documented with the ISSO/AO.", "Documentable:")
 
 
-def stig_word(data: dict, key: str, path: Path):
+def stig_word(data: dict, key: str, path: Path, dc_view: bool = False):
     stig = next(s for s in data["stigs"] if s["key"] == key)
-    rules = sorted((r for r in data["rules"] if r["stig"] == key), key=lambda r: r["stig_id"])
-    w = WordWriter(f"{stig['product']} STIG: Explained")
+    secs = sections(data, key, dc_view)
+    rules = [r for _, _, rs in secs for r in rs]
+    w = WordWriter(_doc_title(stig, dc_view))
     w.p(f"{stig['title']}, {stig['label']}, benchmark date {stig['date']}. {len(rules)} rules. "
         f"Generated by STIG Explorer {data['meta']['version']} on {data['meta']['generated']}.", italic=True)
+    if dc_view:
+        w.p(_dc_note(True).replace("**", ""))
     w.toc()
     w.page_break()
     _how_to_read_word(w)
@@ -480,22 +565,27 @@ def stig_word(data: dict, key: str, path: Path):
                                     ["CAT III (low)", sev["low"]]])
     tops = collections.Counter(r["topics"][0] for r in rules)
     w.table(["Topic", "Rules"], [[data["topics"][t]["name"], n] for t, n in tops.most_common()])
-    w.page_break()
-    w.h("Rules", 1)
-    for r in rules:
-        rule_word(w, data, r)
+    if len(secs) > 1:
+        w.table(["Section", "Rules"], [[h, len(rs)] for h, _, rs in secs])
+    for heading, intro, rs in secs:
+        w.page_break()
+        w.h(heading, 1)
+        if intro:
+            w.p(intro, italic=True)
+        for r in rs:
+            rule_word(w, data, r)
     w.save(path)
 
 
 def guide_word(data: dict, path: Path):
     rules = data["rules"]
-    w = WordWriter("STIG Explorer: DISA STIG Configuration Guide (RHEL & Windows)")
+    w = WordWriter("STIG Explorer: DISA STIG Configuration Guide (RHEL, Ubuntu & Windows)")
     w.p(f"Generated {data['meta']['generated']} from {data['meta']['source']}. {len(rules)} rules across "
         f"{len(data['stigs'])} STIGs.", italic=True)
     w.toc()
     w.page_break()
     w.h("Purpose", 1)
-    w.p("This guide explains what the DISA STIGs for Red Hat Enterprise Linux and Microsoft Windows desktop/server "
+    w.p("This guide explains what the DISA STIGs for Red Hat Enterprise Linux, Canonical Ubuntu and Microsoft Windows desktop/server "
         "operating systems change on a system, and why. It goes with the STIG Explorer search application and the "
         "per-STIG detail documents.")
     _how_to_read_word(w)
@@ -505,6 +595,10 @@ def guide_word(data: dict, path: Path):
         rs = [r for r in rules if r["stig"] == s["key"]]
         c = collections.Counter(r["severity"] for r in rs)
         rows.append([s["product"], s["label"], s["date"], len(rs), c["high"], c["medium"], c["low"]])
+        if any(r.get("role") for r in rs):
+            d = [r for r in rs if r["role"] in ("dc", "both")]
+            c = collections.Counter(r["severity"] for r in d)
+            rows.append([f"  {s['product']}: domain controller view", s["label"], s["date"], len(d), c["high"], c["medium"], c["low"]])
     w.table(["STIG", "Release", "Benchmark date", "Rules", "CAT I", "CAT II", "CAT III"], rows)
     w.h("NIST SP 800-53 revision mapping", 1)
     w.p("Each STIG rule cites one or more CCIs. DISA's CCI List maps each CCI to NIST SP 800-53 controls in Revision 3, "
@@ -522,9 +616,9 @@ def guide_word(data: dict, path: Path):
         w.h(t["name"], 2)
         w.p(f"{t['short']} ({counts[tid]} rules as the primary topic.)", italic=True)
         w.p(t["generic"], "General audience:")
-        w.p(topic_txt(t, "admin", "linux"), "System administrator (RHEL):")
-        w.p(topic_txt(t, "admin", "windows"), "System administrator (Windows):")
-        w.p(topic_txt(t, "impact", "linux"), "Operational impact:")
+        for plat, fam, label in GUIDE_OSES:
+            w.p(topic_txt(t, "admin", plat, fam), f"System administrator ({label}):")
+        w.p(topic_txt(t, "impact", "linux", "rhel"), "Operational impact:")
         w.p(t["pro"], "Cyber security professional:")
         if t["attack"]:
             w.p("; ".join(f"{a} {b}" for a, b in t["attack"]), "ATT&CK:")
@@ -548,9 +642,10 @@ def export_all(data: dict | None = None, stigs: list[str] | None = None, word: b
     gpath = DOCS / "STIG_Explorer_Guide.md"
     gpath.write_text(guide_markdown(data), encoding="utf-8")
     print(f"  wrote {gpath.relative_to(ROOT)}")
-    for k in keys:
-        p = DOCS / "markdown" / f"{k}.md"
-        p.write_text(stig_markdown(data, k), encoding="utf-8")
+    views = [(k, False) for k in keys] + [(k, True) for k in keys if "SERVER" in k]
+    for k, dc in views:
+        p = DOCS / "markdown" / f"{k}{'_DC' if dc else ''}.md"
+        p.write_text(stig_markdown(data, k, dc), encoding="utf-8")
         print(f"  wrote {p.relative_to(ROOT)} ({p.stat().st_size / 1e6:.1f} MB)")
     if not word:
         return
@@ -559,9 +654,9 @@ def export_all(data: dict | None = None, stigs: list[str] | None = None, word: b
         return
     guide_word(data, DOCS / "STIG_Explorer_Guide.docx")
     print(f"  wrote docs/STIG_Explorer_Guide.docx")
-    for k in keys:
-        p = DOCS / "word" / f"{k}.docx"
-        stig_word(data, k, p)
+    for k, dc in views:
+        p = DOCS / "word" / f"{k}{'_DC' if dc else ''}.docx"
+        stig_word(data, k, p, dc)
         print(f"  wrote {p.relative_to(ROOT)} ({p.stat().st_size / 1e6:.1f} MB)")
 
 

@@ -21,6 +21,9 @@
     set(k, v) { try { localStorage.setItem("stigx." + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
   };
   const SEV_ORDER = { high: 0, medium: 1, low: 2 };
+  const ROLE_LABEL = { dc: "Domain controller only", ms: "Member server only" };
+  const SHELL_LABEL = { powershell: "PowerShell", cmd: "CMD", bash: "Bash" };
+  const SRC_LABEL = { disa: "From DISA check text", generated: "Generated from the setting", curated: "STIG Explorer command" };
   const SEV_LABEL = { high: "CAT I", medium: "CAT II", low: "CAT III" };
   const LEVELS = {
     generic: ["L3", "General Audience", "Plain language for readers with limited security or IT background"],
@@ -34,7 +37,8 @@
   const stigByKey = Object.fromEntries(D.stigs.map((s) => [s.key, s]));
   const stigOrder = Object.fromEntries(D.stigs.map((s, i) => [s.key, i]));  // build order: platform, then version
   const byStig = (a, b) => stigOrder[a.stig] - stigOrder[b.stig];
-  const topicTxt = (t, f, plat) => { const v = t[f]; return v && typeof v === "object" ? (v[plat] || Object.values(v)[0]) : (v || ""); };
+  // Topic text for an OS family (rhel/ubuntu/windows), falling back to the platform (linux/windows).
+  const topicTxt = (t, f, plat, os) => { const v = t[f]; return v && typeof v === "object" ? (v[os] || v[plat] || Object.values(v)[0]) : (v || ""); };
   const nist = (r, rev) => { const out = []; for (const c of r.ccis) for (const i of (D.ccis[c]?.[rev] || [])) if (!out.includes(i)) out.push(i); return out; };
   const normCtl = (s) => s.toUpperCase().replace(/\s+/g, "");
 
@@ -44,7 +48,8 @@
     const t = r.topics.map((id) => D.topics[id].name).join(" ");
     const n = ["rev3", "rev4", "rev5"].map((rev) => nist(r, rev).join(" ")).join(" ");
     r._hay = [r.title, r.vuln_id, r.stig_id, r.id, r.srg, r.ccis.join(" "), n, s, t, stigByKey[r.stig].product,
-      r.discussion, r.fix, r.check, (r.legacy_ids || []).join(" ")].join("\n").toLowerCase();
+      r.discussion, r.fix, r.check, (r.legacy_ids || []).join(" "), (r.validate || []).map((v) => v.cmd).join("\n"),
+      ROLE_LABEL[r.role] || ""].join("\n").toLowerCase();
     r._nist = { rev3: nist(r, "rev3"), rev4: nist(r, "rev4"), rev5: nist(r, "rev5") };
   }
   const eqGroups = {};
@@ -56,7 +61,7 @@
     q: "",
     stigs: new Set(store.get("stigs", D.stigs.map((s) => s.key)).filter((k) => stigByKey[k])),
     sev: new Set(["high", "medium", "low"]),
-    topic: "", rev: "rev5", family: "", control: "", impl: "", doc: false,
+    topic: "", rev: "rev5", family: "", control: "", impl: "", doc: false, role: "",
     sort: "stig", level: store.get("level", "generic"), view: "rules",
     results: [], shown: 0, selected: null,
   };
@@ -67,16 +72,26 @@
   function buildFilters() {
     const counts = {};
     for (const r of D.rules) counts[r.stig] = (counts[r.stig] || 0) + 1;
-    const groups = { linux: "Red Hat Enterprise Linux", windows: "Microsoft Windows" };
+    const groups = { rhel: "Red Hat Enterprise Linux", ubuntu: "Canonical Ubuntu", windows: "Microsoft Windows" };
     let html = "";
     for (const [plat, label] of Object.entries(groups)) {
-      const ss = D.stigs.filter((s) => s.platform === plat);
+      const ss = D.stigs.filter((s) => s.family === plat);
       if (!ss.length) continue;
       html += `<div class="group-label">${esc(label)} <a class="link-btn small" data-only="${plat}">only</a></div>`;
       for (const s of ss) {
         html += `<label class="check"><input type="checkbox" data-stig="${esc(s.key)}" ${state.stigs.has(s.key) ? "checked" : ""}>
-          ${esc(s.product.replace("Red Hat Enterprise Linux", "RHEL").replace("Microsoft ", ""))}
+          ${esc(shortProduct(s.product))}
           <span class="count">${esc(s.label)} · ${counts[s.key] || 0}</span></label>`;
+      }
+    }
+    const servers = D.stigs.filter((s) => s.key.includes("SERVER"));
+    if (servers.length) {
+      html += `<div class="group-label">Domain controller views</div>`;
+      for (const s of servers) {
+        const n = D.rules.filter((r) => r.stig === s.key && (r.role === "dc" || r.role === "both")).length;
+        const only = D.rules.filter((r) => r.stig === s.key && r.role === "dc").length;
+        html += `<a class="dc-link" data-dcview="${esc(s.key)}" title="Show only the ${esc(shortProduct(s.product))} rules that apply to domain controllers">
+          ${esc(shortProduct(s.product))} DC<span class="count">${n} rules · ${only} DC-only</span></a>`;
       }
     }
     $("#stigFilters").innerHTML = html;
@@ -128,6 +143,13 @@
       if (state.topic && !r.topics.includes(state.topic)) continue;
       if (state.impl && !r.setting_cats.includes(state.impl)) continue;
       if (state.doc && !r.documentable) continue;
+      if (state.role) {
+        if (!r.role) continue;
+        if (state.role === "dc" && r.role === "ms") continue;
+        if (state.role === "ms" && r.role === "dc") continue;
+        if (state.role === "dc-only" && r.role !== "dc") continue;
+        if (state.role === "ms-only" && r.role !== "ms") continue;
+      }
       const nl = r._nist[state.rev];
       if (state.family && !nl.some((i) => i.startsWith(state.family + "-"))) continue;
       if (state.control && !ctlMatch(nl, state.control)) continue;
@@ -187,8 +209,8 @@
       return `<li class="rule-item" data-id="${esc(r.id)}" tabindex="0" ${state.selected === r ? 'aria-current="true"' : ""}>
         <span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
         <div class="title">${highlight(r.title, terms)}</div>
-        <div class="meta"><span class="chip ${s.platform}">${esc(shortProduct(s.product))}</span>
-          <span>${esc(r.stig_id)}</span><span>${esc(r.vuln_id)}</span><span class="chip">${esc(t.name)}</span></div>
+        <div class="meta"><span class="chip ${s.family}">${esc(shortProduct(s.product))}</span>
+          <span>${esc(r.stig_id)}</span><span>${esc(r.vuln_id)}</span>${roleChip(r)}<span class="chip">${esc(t.name)}</span></div>
       </li>`;
     }).join("");
     $("#list").insertAdjacentHTML("beforeend", html);
@@ -198,7 +220,9 @@
     more.textContent = `Show more (${(state.results.length - state.shown).toLocaleString()} remaining)`;
   }
 
-  const shortProduct = (p) => p.replace("Red Hat Enterprise Linux", "RHEL").replace("Microsoft ", "");
+  const roleChip = (r) => (ROLE_LABEL[r.role] ? `<span class="chip role-${r.role}">${esc(ROLE_LABEL[r.role])}</span>` : "");
+
+  const shortProduct = (p) => p.replace("Red Hat Enterprise Linux", "RHEL").replace("Microsoft ", "").replace("Canonical ", "");
 
   // ---------------------------------------------------------------- detail
   function selectRule(r, push = true) {
@@ -244,16 +268,32 @@
         <td data-label="Setting"><code>${esc(s.name)}</code></td><td data-label="Required value">${esc(s.value)}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
+  function validationHtml(r) {
+    const v = r.validate || [];
+    let h = `<h4>Command-line validation</h4>`;
+    if (!v.length) {
+      return h + `<p class="muted">No single command can validate this rule. It is a procedural or manual check, so follow the DISA check procedure below.</p>`;
+    }
+    h += `<p class="small muted">Copy a command into ${r.platform === "windows" ? "PowerShell or Command Prompt (run as Administrator where noted)" : "a terminal"} instead of browsing ${r.platform === "windows" ? "the Group Policy editor" : "configuration files"}. Commands only read settings; they change nothing. DISA's check procedure remains the authoritative test.</p>`;
+    v.forEach((c, i) => {
+      const id = `val-${r.vuln_id}-${i}`;
+      h += `<div class="val"><div class="val-head"><span class="shell ${esc(c.shell)}">${esc(SHELL_LABEL[c.shell] || c.shell)}</span>
+        <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${id}">Copy</button></div>
+        <pre class="code" id="${id}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}</div>`;
+    });
+    return h;
+  }
+
   function adminHtml(r) {
     const ts = r.topics.map((id) => D.topics[id]);
     const p = r.platform;
     const cmds = r.settings.filter((s) => s.type === "command").map((s) => s.name);
     let h = `<h4>Settings changed</h4>${settingsTable(r)}`;
+    h += validationHtml(r);
     if (cmds.length) h += `<h4>Remediation commands</h4><pre class="code">${esc(cmds.map((c) => "$ sudo " + c).join("\n"))}</pre>`;
-    if (r.check_cmds.length) h += `<h4>Quick verification</h4><pre class="code">${esc(r.check_cmds.map((c) => "$ " + c).join("\n"))}</pre>`;
-    h += `<h4>How it works</h4><p>${esc(topicTxt(ts[0], "admin", p))}</p>`;
-    if (ts[1]) h += `<h4>Also related: ${esc(ts[1].name)}</h4><p>${esc(topicTxt(ts[1], "admin", p))}</p>`;
-    h += `<h4>Operational impact</h4><p>${esc(topicTxt(ts[0], "impact", p))}</p>`;
+    h += `<h4>How it works</h4><p>${esc(topicTxt(ts[0], "admin", p, r.os))}</p>`;
+    if (ts[1]) h += `<h4>Also related: ${esc(ts[1].name)}</h4><p>${esc(topicTxt(ts[1], "admin", p, r.os))}</p>`;
+    h += `<h4>Operational impact</h4><p>${esc(topicTxt(ts[0], "impact", p, r.os))}</p>`;
     if (r.potential_impacts) h += `<h4>DISA-noted potential impacts</h4><p>${esc(r.potential_impacts)}</p>`;
     h += codeBlock("Check procedure (DISA)", r.check, "chk-" + r.vuln_id);
     h += codeBlock("Fix procedure (DISA)", r.fix, "fix-" + r.vuln_id);
@@ -303,7 +343,7 @@
     const eqHtml = eq.length ? `<section class="level-block"><header><h3>Related rules in other STIGs</h3>
       <span class="muted small">Same requirement or setting on other platforms/versions</span></header>
       <div class="level-body"><ul class="eq-list">${eq.sort(byStig).map((x) =>
-        `<li><span class="chip ${stigByKey[x.stig].platform}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
+        `<li><span class="chip ${stigByKey[x.stig].family}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
          <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${x.severity}">${SEV_LABEL[x.severity]}</span>
          <span class="muted">${esc(x.title)}</span></li>`).join("")}</ul></div></section>` : "";
     const nist5 = r._nist.rev5.join(", ");
@@ -311,8 +351,8 @@
       <div class="d-head">
         <button class="btn ghost close-detail" id="closeDetail">← Back to results</button>
         <div class="d-ids"><span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
-          <span class="chip ${s.platform}">${esc(s.product)} ${esc(s.label)}</span>
-          <code>${esc(r.vuln_id)}</code><code>${esc(r.stig_id)}</code><code>${esc(r.id)}</code></div>
+          <span class="chip ${s.family}">${esc(s.product)} ${esc(s.label)}</span>
+          <code>${esc(r.vuln_id)}</code><code>${esc(r.stig_id)}</code><code>${esc(r.id)}</code>${roleChip(r)}</div>
         <h2>${esc(r.title)}</h2>
         <div class="d-ids">${r.topics.map((t) => `<span class="chip topic" data-topic="${esc(t)}" title="Filter by this topic">${esc(D.topics[t].name)}</span>`).join("")}
           ${r.ccis.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}
@@ -344,7 +384,10 @@ ${t.generic}
 ### System administrator
 ${set || "_No single machine-readable setting; see fix text._"}
 
-${topicTxt(t, "admin", p)}
+**Command-line validation:**
+${(r.validate || []).map((v) => `- ${SHELL_LABEL[v.shell]}: \`${v.cmd}\`${v.expect ? ` (expected: ${v.expect})` : ""}`).join("\n") || "_Procedural/manual check; follow the DISA check procedure._"}
+
+${topicTxt(t, "admin", p, r.os)}
 
 **Check:**
 \`\`\`
@@ -370,7 +413,8 @@ ${t.pro}
     $("#topicGrid").innerHTML = Object.entries(D.topics).sort((a, b) => (tc[b[0]] || 0) - (tc[a[0]] || 0)).map(([id, t]) => {
       let body;
       if (lvl === "generic") body = `<p>${esc(t.generic)}</p>`;
-      else if (lvl === "admin") body = `<p><b>RHEL:</b> ${esc(topicTxt(t, "admin", "linux"))}</p><p><b>Windows:</b> ${esc(topicTxt(t, "admin", "windows"))}</p>`;
+      else if (lvl === "admin") body = [["RHEL", "linux", "rhel"], ["Ubuntu", "linux", "ubuntu"], ["Windows", "windows", "windows"]]
+        .map(([label, plat, os]) => `<p><b>${label}:</b> ${esc(topicTxt(t, "admin", plat, os))}</p>`).join("");
       else body = `<p>${esc(t.pro)}</p>${t.attack.length ? `<p class="small muted">ATT&amp;CK: ${t.attack.map(([a, b]) => esc(a + " " + b)).join("; ")}</p>` : ""}`;
       return `<div class="topic-card"><h3>${esc(t.name)}</h3><p class="muted small">${esc(t.short)}</p>${body}
         <div class="foot"><span class="muted small">${tc[id] || 0} rules</span><button class="btn ghost" data-topicgo="${esc(id)}">View rules →</button></div></div>`;
@@ -385,7 +429,7 @@ ${t.pro}
     }).join("");
     $("#about").innerHTML = `
       <h2>About STIG Explorer</h2>
-      <p>STIG Explorer makes the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux and Microsoft Windows
+      <p>STIG Explorer makes the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux, Canonical Ubuntu and Microsoft Windows
       desktop and server operating systems searchable, and explains every rule at three levels:</p>
       <ul>
         <li><b>General Audience (L3):</b> plain language and an everyday analogy.</li>
@@ -414,15 +458,16 @@ ${t.pro}
 
   // ---------------------------------------------------------------- CSV
   function exportCsv() {
-    const cols = ["STIG", "Release", "Vuln ID", "STIG ID", "Rule ID", "Severity", "Title", "Plain language", "Topic", "SRG", "CCI",
-      "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Check", "Fix"];
+    const cols = ["STIG", "Release", "Vuln ID", "STIG ID", "Rule ID", "Severity", "Title", "Plain language", "Topic", "SRG", "Server role", "CCI",
+      "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Validation commands", "Check", "Fix"];
     const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const lines = [cols.map(q).join(",")];
     for (const r of state.results) {
       const s = stigByKey[r.stig];
       lines.push([s.product, s.label, r.vuln_id, r.stig_id, r.id, SEV_LABEL[r.severity], r.title, r.plain,
-        r.topics.map((t) => D.topics[t].name).join("; "), r.srg, r.ccis.join("; "), r._nist.rev5.join("; "), r._nist.rev4.join("; "),
+        r.topics.map((t) => D.topics[t].name).join("; "), r.srg, ROLE_LABEL[r.role] || (r.role ? "All servers" : ""), r.ccis.join("; "), r._nist.rev5.join("; "), r._nist.rev4.join("; "),
         r._nist.rev3.join("; "), r.settings.filter((x) => x.type !== "command").map((x) => `${x.target} | ${x.name} = ${x.value}`).join("\n"),
+        (r.validate || []).map((v) => `[${SHELL_LABEL[v.shell]}] ${v.cmd}`).join("\n"),
         r.check, r.fix].map(q).join(","));
     }
     const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
@@ -473,9 +518,15 @@ ${t.pro}
       store.set("stigs", [...state.stigs]); runSearch();
     });
     $("#stigFilters").addEventListener("click", (e) => {
+      const dc = e.target.closest("[data-dcview]");
+      if (dc) {
+        state.stigs = new Set([dc.dataset.dcview]); state.role = "dc"; $("#roleFilter").value = "dc";
+        $$("#stigFilters input").forEach((i) => (i.checked = state.stigs.has(i.dataset.stig)));
+        store.set("stigs", [...state.stigs]); runSearch(); return;
+      }
       const plat = e.target.dataset?.only; if (!plat) return;
       e.preventDefault();
-      state.stigs = new Set(D.stigs.filter((s) => s.platform === plat).map((s) => s.key));
+      state.stigs = new Set(D.stigs.filter((s) => s.family === plat).map((s) => s.key));
       $$("#stigFilters input").forEach((i) => (i.checked = state.stigs.has(i.dataset.stig)));
       store.set("stigs", [...state.stigs]); runSearch();
     });
@@ -487,6 +538,7 @@ ${t.pro}
     $("#familyFilter").addEventListener("change", (e) => { state.family = e.target.value; runSearch(); });
     $("#controlFilter").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => { state.control = e.target.value.trim(); runSearch(); }, 150); });
     $("#docFilter").addEventListener("change", (e) => { state.doc = e.target.checked; runSearch(); });
+    $("#roleFilter").addEventListener("change", (e) => { state.role = e.target.value; runSearch(); });
     $("#revSeg").addEventListener("click", (e) => {
       const rev = e.target.dataset.rev; if (!rev) return;
       state.rev = rev;
@@ -497,6 +549,7 @@ ${t.pro}
     $("#resetBtn").addEventListener("click", () => {
       state.q = ""; $("#q").value = ""; state.topic = ""; $("#topicFilter").value = ""; state.impl = ""; $("#implFilter").value = "";
       state.family = ""; state.control = ""; $("#controlFilter").value = ""; state.doc = false; $("#docFilter").checked = false;
+      state.role = ""; $("#roleFilter").value = "";
       state.stigs = new Set(D.stigs.map((s) => s.key)); state.sev = new Set(["high", "medium", "low"]);
       $$("#stigFilters input, #sevFilters input").forEach((i) => (i.checked = true));
       store.set("stigs", [...state.stigs]); buildFamilies(); runSearch();

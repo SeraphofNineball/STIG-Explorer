@@ -14,15 +14,32 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path
 
-from . import __version__, explain, parse, settings, topics
+from . import __version__, explain, parse, settings, topics, validate
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "web" / "data" / "stig_data.js"
 JS_PREFIX = "window.STIG_DATA = "
+
+
+_DC_NA = re.compile(r"(domain controllers?|DCs?)[^.\n]{0,40}\b(this|the requirement)[^.\n]{0,20}\bNA\b"
+                    r"|This applies to (member servers|domain-joined member|standalone)|NA for domain controllers", re.I)
+
+
+def server_role(r: dict) -> str:
+    """Windows Server applicability: 'dc' (domain controllers only), 'ms' (member/standalone servers only)
+    or 'both'. DISA encodes this in the STIG ID (WN22-DC-*, WN22-MS-*); a few common-section rules
+    are marked NA for domain controllers in their check text instead."""
+    seg = r["stig_id"].split("-")[1] if r["stig_id"].count("-") >= 2 else ""
+    if seg == "DC":
+        return "dc"
+    if seg == "MS" or _DC_NA.search(r["check"]):
+        return "ms"
+    return "both"
 
 
 def _equivalence_groups(rules: list[dict]) -> None:
@@ -80,11 +97,14 @@ def build(raw_dir: Path = RAW, out: Path = OUT) -> dict:
         for r in b["rules"]:
             r["stig"] = b["key"]
             r["platform"] = b["platform"]
+            r["os"] = b["family"]
             r["settings"] = settings.extract(r, b["platform"])
             r["setting_cats"] = settings.setting_categories(r["settings"], r["fix"])
             explain.enrich(r, b["platform"])
+            r["validate"] = validate.commands(r, b["family"], b["key"], r["check_cmds"])
+            r["role"] = server_role(r) if "SERVER" in b["key"] else None
             all_rules.append(r)
-        stigs.append({k: b[k] for k in ("key", "title", "product", "platform", "version",
+        stigs.append({k: b[k] for k in ("key", "title", "product", "platform", "family", "version",
                                          "release", "label", "date", "source")}
                      | {"count": len(b["rules"])})
         print(f"  {b['key']:<18} {b['label']:<7} {len(b['rules']):>4} rules  ({b['date']})")
@@ -135,10 +155,10 @@ def build(raw_dir: Path = RAW, out: Path = OUT) -> dict:
 
 
 def _slim(r: dict) -> dict:
-    keep = ["id", "vuln_id", "stig_id", "stig", "platform", "srg", "title", "severity", "cat",
+    keep = ["id", "vuln_id", "stig_id", "stig", "platform", "os", "srg", "title", "severity", "cat",
             "discussion", "mitigations", "potential_impacts", "severity_override", "third_party_tools",
             "documentable", "check", "fix", "ccis", "legacy_ids", "settings", "setting_cats",
-            "topics", "plain", "glossary", "check_cmds", "families", "eq"]
+            "topics", "plain", "glossary", "check_cmds", "validate", "role", "families", "eq"]
     out = {k: r[k] for k in keep}
     for s in out["settings"]:
         s.pop("line", None)
