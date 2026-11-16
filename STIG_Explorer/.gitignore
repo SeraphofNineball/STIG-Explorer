@@ -1,6 +1,0 @@
-__pycache__/
-*.pyc
-.venv/
-# DISA source zips are downloaded with `python -m stig_explorer.build --fetch`
-data/raw/*
-!data/raw/.gitkeep

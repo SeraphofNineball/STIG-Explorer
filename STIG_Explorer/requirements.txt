@@ -1,3 +1,0 @@
-# Runtime (web server, build pipeline) uses only the Python standard library.
-# python-docx is needed only to generate the Word (.docx) documents.
-python-docx==1.2.0
