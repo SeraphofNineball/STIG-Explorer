@@ -231,9 +231,9 @@
       const s = stigByKey[r.stig];
       const t = D.topics[r.topics[0]];
       return `<li class="rule-item" data-id="${esc(r.id)}" tabindex="0" ${state.selected === r ? 'aria-current="true"' : ""}>
-        <span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
+        <span class="sev ${esc(r.severity)}">${SEV_LABEL[r.severity]}</span>
         <div class="title">${tagBadges(r)}${highlight(r.title, terms)}</div>
-        <div class="meta"><span class="chip ${s.family}">${esc(shortProduct(s.product))}</span>
+        <div class="meta"><span class="chip ${esc(s.family)}">${esc(shortProduct(s.product))}</span>
           <span>${esc(r.stig_id)}</span><span>${esc(r.vuln_id)}</span>${roleChip(r)}<span class="chip">${esc(t.name)}</span></div>
       </li>`;
     }).join("");
@@ -245,7 +245,7 @@
     more.textContent = `Show more (${(state.results.length - state.shown).toLocaleString()} remaining)`;
   }
 
-  const roleChip = (r) => (ROLE_LABEL[r.role] ? `<span class="chip role-${r.role}">${esc(ROLE_LABEL[r.role])}</span>` : "");
+  const roleChip = (r) => (ROLE_LABEL[r.role] ? `<span class="chip role-${esc(r.role)}">${esc(ROLE_LABEL[r.role])}</span>` : "");
 
   const shortProduct = (p) => p.replace("Red Hat Enterprise Linux", "RHEL").replace("Microsoft ", "").replace("Canonical ", "");
 
@@ -267,8 +267,8 @@
   }
 
   function codeBlock(label, text, id) {
-    return `<div class="code-head"><h4>${esc(label)}</h4><button class="copy" data-copy="${id}">Copy</button></div>
-      <pre class="code" id="${id}">${esc(text)}</pre>`;
+    return `<div class="code-head"><h4>${esc(label)}</h4><button class="copy" data-copy="${esc(id)}">Copy</button></div>
+      <pre class="code" id="${esc(id)}">${esc(text)}</pre>`;
   }
 
   function genericHtml(r) {
@@ -276,7 +276,7 @@
     const [sl, sp] = D.meta.severity_plain[r.severity];
     let h = `<h4>In plain terms</h4><p class="plain-lead">${esc(r.plain)}</p>
       <h4>Why it matters</h4><p>${esc(t.generic)}</p>
-      <h4>How important is it?</h4><p class="callout"><span class="sev ${r.severity}">${esc(sl)}</span> ${esc(sp)}</p>`;
+      <h4>How important is it?</h4><p class="callout"><span class="sev ${esc(r.severity)}">${esc(sl)}</span> ${esc(sp)}</p>`;
     if (r.glossary.length) {
       h += `<h4>Key terms</h4><dl class="gloss">${r.glossary.map((g) => `<dt>${esc(g.term)}</dt><dd>${esc(g.definition)}</dd>`).join("")}</dl>`;
     }
@@ -294,8 +294,10 @@
   }
 
   function unsafeNote(cmd) {
-    const why = window.STIGX_SCRIPT ? window.STIGX_SCRIPT.unsafeReason(cmd) : "";
-    return why ? `<p class="val-warn">⚠ Use with care: this command ${esc(why)}. It is left out of exported scripts.</p>` : "";
+    const S = window.STIGX_SCRIPT;
+    if (!S || S.approvedCommand(cmd)) return "";
+    const why = S.unsafeReason(cmd.cmd) || "is not on the approved read-only export allowlist";
+    return `<p class="val-warn">⚠ Manual review: this command ${esc(why)}. It will not run automatically in exported scripts.</p>`;
   }
 
   function validationHtml(r) {
@@ -304,13 +306,13 @@
     if (!v.length) {
       return h + `<p class="muted">No single command can validate this rule. It is a procedural or manual check, so follow the DISA check procedure below.</p>`;
     }
-    h += `<p class="small muted">Copy a command into ${r.platform === "windows" ? "PowerShell or Command Prompt (run as Administrator where noted)" : "a terminal"} instead of browsing ${r.platform === "windows" ? "the Group Policy editor" : "configuration files"}. Commands only read settings; they change nothing. DISA's check procedure remains the authoritative test.</p>`;
+    h += `<p class="small muted">Review a command before copying it into ${r.platform === "windows" ? "PowerShell or Command Prompt (run as Administrator where noted)" : "a terminal"} instead of browsing ${r.platform === "windows" ? "the Group Policy editor" : "configuration files"}. Some original checks can change settings or expose sensitive data. Only allowlisted read-only queries are included in exported scripts. DISA's check procedure remains the authoritative test.</p>`;
     v.forEach((c, i) => {
       const id = `val-${r.vuln_id}-${i}`;
       h += `<div class="val"><div class="val-head"><span class="shell ${esc(c.shell)}">${esc(SHELL_LABEL[c.shell] || c.shell)}</span>
-        <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${id}">Copy</button></div>
-        <pre class="code" id="${id}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}
-        ${unsafeNote(c.cmd)}</div>`;
+        <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${esc(id)}">Copy</button></div>
+        <pre class="code" id="${esc(id)}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}
+        ${unsafeNote(c)}</div>`;
     });
     return h;
   }
@@ -374,15 +376,15 @@
     const eqHtml = eq.length ? `<section class="level-block"><header><h3>Related rules in other STIGs</h3>
       <span class="muted small">Same requirement or setting on other platforms/versions</span></header>
       <div class="level-body"><ul class="eq-list">${eq.sort(byStig).map((x) =>
-        `<li><span class="chip ${stigByKey[x.stig].family}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
-         <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${x.severity}">${SEV_LABEL[x.severity]}</span>
+        `<li><span class="chip ${esc(stigByKey[x.stig].family)}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
+         <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${esc(x.severity)}">${SEV_LABEL[x.severity]}</span>
          <span class="muted">${esc(x.title)}</span></li>`).join("")}</ul></div></section>` : "";
     const nist5 = r._nist.rev5.join(", ");
     $("#detail").innerHTML = `
       <div class="d-head">
         <button class="btn ghost close-detail" id="closeDetail">← Back to results</button>
-        <div class="d-ids"><span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
-          <span class="chip ${s.family}">${esc(s.product)} ${esc(s.label)}</span>
+        <div class="d-ids"><span class="sev ${esc(r.severity)}">${SEV_LABEL[r.severity]}</span>
+          <span class="chip ${esc(s.family)}">${esc(s.product)} ${esc(s.label)}</span>
           <code>${esc(r.vuln_id)}</code><code>${esc(r.stig_id)}</code><code>${esc(r.id)}</code>${roleChip(r)}</div>
         <h2>${tagBadges(r)}${esc(r.title)}</h2>
         ${r._tags.map(([t, notes]) => `<p class="tag-callout" data-tagcolor="${esc(tagDef[t].color)}"><span class="tag-badge" data-tagcolor="${esc(tagDef[t].color)}">${esc(tagDef[t].label)}</span>
@@ -475,7 +477,6 @@ ${t.pro}
     }).join("");
     $("#about").innerHTML = `
       <h2>About STIG Explorer</h2>
-      <p><strong>Developed by:</strong> Matthew Cusanelli</p>
       <p>STIG Explorer makes the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux, Canonical Ubuntu and Microsoft Windows
       desktop and server operating systems searchable, and explains every rule at three levels:</p>
       <ul>
@@ -507,7 +508,7 @@ ${t.pro}
   function exportCsv() {
     const cols = ["STIG", "Release", "Vuln ID", "STIG ID", "Rule ID", "Severity", "Title", "Plain language", "Topic", "SRG", "Server role", "CCI",
       "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Validation commands", "Check", "Fix", "Tags"];
-    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const q = window.STIGX_SECURITY.csvCell;
     const lines = [cols.map(q).join(",")];
     for (const r of state.results) {
       const s = stigByKey[r.stig];
@@ -683,7 +684,11 @@ ${t.pro}
     const v = location.hash.match(/view=(rules|topics|about)/);
     if (v) setView(v[1]);
     const q = location.hash.match(/[#&]q=([^&]*)/);
-    if (q) { state.q = decodeURIComponent(q[1].replace(/\+/g, " ")); $("#q").value = state.q; runSearch(); }
+    if (q) {
+      try { state.q = decodeURIComponent(q[1].replace(/\+/g, " ")).slice(0, 256); }
+      catch { state.q = ""; }
+      $("#q").value = state.q; runSearch();
+    }
     const m = location.hash.match(/rule=([^&]+)/);
     if (m) {
       const id = decodeURIComponent(m[1]);
