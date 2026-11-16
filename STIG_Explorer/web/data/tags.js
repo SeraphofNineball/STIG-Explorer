@@ -1,0 +1,1 @@
+window.STIG_TAGS = {"tags":[{"id":"fmcc","label":"FMCC","name":"Federally Mandated Critical Control","color":"#b71c1c","description":"Rules designated as Federally Mandated Critical Controls by your organization. DISA does not publish this designation in the STIG files, so this list is maintained locally.","count":0,"source":"FMCC.csv"}],"rules":{}};
