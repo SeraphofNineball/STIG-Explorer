@@ -1,0 +1,1384 @@
+diff --git a/STIG_Explorer/Dockerfile b/STIG_Explorer/Dockerfile
+index ed0466b..8fa870e 100644
+--- a/STIG_Explorer/Dockerfile
++++ b/STIG_Explorer/Dockerfile
+@@ -1,5 +1,8 @@
+ # STIG Explorer - searchable DISA STIG configurations with 3-level explanations
+-FROM python:3.12-slim-bookworm
++# For a reproducible release build, override with a verified digest, e.g.
++# --build-arg PYTHON_BASE_IMAGE=python:3.12-slim-bookworm@sha256:<approved-manifest-digest>
++ARG PYTHON_BASE_IMAGE=python:3.12-slim-bookworm
++FROM ${PYTHON_BASE_IMAGE}
+ 
+ ENV PYTHONDONTWRITEBYTECODE=1 \
+     PYTHONUNBUFFERED=1 \
+@@ -8,9 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
+ 
+ WORKDIR /app
+ 
+-COPY requirements.txt .
+-RUN pip install --no-cache-dir -r requirements.txt \
+- && useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stigx
++# The runtime server uses only Python's standard library. Do not install
++# python-docx (or its native transitive dependencies) into the service image.
++RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin stigx
+ 
+ COPY stig_explorer/ ./stig_explorer/
+ COPY web/ ./web/
+diff --git a/STIG_Explorer/README.md b/STIG_Explorer/README.md
+index 839fc00..382194b 100644
+--- a/STIG_Explorer/README.md
++++ b/STIG_Explorer/README.md
+@@ -18,7 +18,7 @@ generates Word and Markdown documents.
+   permissions and audit rules, extracted from DISA's text
+ - **Command-line validation** with a Copy button per command: PowerShell, CMD and Bash commands, each with its
+   expected result
+-- **Validation script export**: download a read-only `.ps1` or `.sh` that runs the checks on a system
++- **Validation script export**: download `.ps1` or `.sh` scripts that run only narrowly approved, read-only checks; other commands require manual review
+ - **NIST SP 800-53 Rev 3, Rev 4 and Rev 5** mapping for every rule, through DISA's CCI List
+ - **Domain controller views** for every Windows Server STIG, in the app and in the documents
+ - **Custom tags** such as **FMCC** (Federally Mandated Critical Controls), maintained in a CSV file
+@@ -232,14 +232,13 @@ physical checks) and say so.
+ Commands quoted in DISA's own check text are included too, labelled **From DISA check text**. Others are labelled
+ **Generated from the setting** or **STIG Explorer command**.
+ 
+-**Safety:** generated commands only read settings. Commands that need an elevated prompt or root say so in
+-*Expected*. A few DISA check commands are not safe to run unattended. The app shows a ⚠ warning next to them and they
+-are left out of exported scripts:
+-
+-- `sshd -dd` starts a debug copy of sshd and can hang waiting for a connection
+-- `logger` writes a test message to the system log
+-- `apt download` / `dpkg-deb` download a package file
+-- `aide --check` and `rpm -Va` can run for many minutes
++**Safety:** DISA's original check text is authoritative, but extracted commands are *not* inherently safe to execute.
++The Copy button shows the original command and may include checks that change files, expose credential material or take a
++long time. **Review before manually running or copying anything.** An alert identifies commands excluded from automated
++exports. The exporter selects only a conservative set of approved read-only command forms (e.g. `sysctl key`, `rpm -q
++package`, `systemctl is-enabled service`, specific `Get-ItemProperty` queries, and `auditpol /get`). Everything else,
++including all checks reading `/etc/shadow`, is **manual-only**. The three full password-hash-reading commands for
++V-230232, V-258231 and V-281221 are not executed or logged by generated scripts.
+ 
+ ---
+ 
+@@ -259,17 +258,18 @@ How the scripts behave:
+   RHEL and its rebuilds, and Ubuntu, from `/etc/os-release`) and runs only that STIG's checks. On Windows Server it
+   also detects whether the machine is a domain controller and skips rules for the other role. `-All` / `--all` runs
+   every check in the file.
+-- **They're read-only.** On Windows, `secedit` and the CMD checks write temporary files to `%TEMP%`. Nothing else is
+-  written.
++- **Only allowlisted checks execute.** Unsupported/complex commands, `secedit` exports, shell pipelines and all
++  password-hash-reading commands are marked manual-only. The scripts no longer create a temporary CMD file.
+ - **They report but don't judge.** Each check prints the rule ID, severity, title (with any tag such as `[FMCC]`), the
+   command, the expected result and the actual output. The script does not decide pass or fail; review each output
+   against *Expected*. `-LogPath` saves the whole run to a file; on Linux, redirect the output (`> results.txt`).
+-- **Manual checks are listed, not run.** Commands with placeholders (e.g. `<filename>`, `[user]`) and the unsafe DISA
+-  commands above are listed at the end of the script with the reason, along with procedural rules.
++- **Manual checks are listed, not run.** Commands outside the narrow reviewed allowlist (including placeholders and
++  complex shell expressions) appear at the end as comments alongside procedural rules.
+ - **They work without sudo installed.** When the Bash script runs as root it drops `sudo` from commands automatically.
+ 
+ Filter first to keep scripts focused, for example one STIG, CAT I only, or a single tag such as FMCC. Exporting every
+-rule produces 1,545 Windows checks and 2,199 Linux checks.
++rule includes approximately 692 approved Windows commands and 358 approved Linux commands (from the supplied
++November 2026 dataset); the other commands are manual-only. Rebuilt data may change these counts.
+ 
+ ---
+ 
+@@ -379,6 +379,10 @@ python -m stig_explorer.build --fetch --docs       # download, parse, build data
+ docker compose up -d --build                       # if you use the container
+ ```
+ 
++`--fetch` enforces a maximum download size, records locally observed `.sha256` hashes and checks recorded hashes
++when using cached files. A recorded hash does **not** independently prove authenticity: compare against a trusted
++external release digest when available. ZIP parsing imposes size, ratio, file-count and depth limits.
++
+ `--fetch` probes `https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/` for the newest `V#R#` of each product, plus
+ `U_CCI_List.zip` (the CCI-to-NIST mapping), and removes older releases from `data/raw/`.
+ 
+@@ -439,15 +443,21 @@ The image (`python:3.12-slim-bookworm`, about 150 MB) is hardened by default:
+ 
+ - runs as a **non-root** user (UID 10001) on a **read-only** root filesystem, with **all Linux capabilities dropped**
+   and `no-new-privileges` (in `docker-compose.yml`)
+-- published on **127.0.0.1 only**; to serve a team, change the port mapping in `docker-compose.yml` to `"8080:8080"`,
+-  ideally behind a reverse proxy that adds TLS and authentication
++- published on **127.0.0.1 only**. For team access, put it behind an authentication- and TLS-enforcing reverse
++  proxy with request limits; do **not** directly publish the unauthenticated API on a network
+ - sends security headers on every response: a strict Content-Security-Policy (`default-src 'self'`, no inline script
+   or style), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+ - makes no outbound connections and loads no external scripts, fonts or images; everything is served locally
+-- the API is read-only and search input is quoted before it reaches SQLite, so FTS syntax can't be injected
++- the API is read-only, quotes FTS search terms, bounds request size and search length, applies per-IP rate limits,
++  and caps simultaneous request threads
+ - stops promptly on `docker stop` (handles SIGTERM) and includes a health check on `/api/health` (with Podman, build
+   with `--format docker` to keep the HEALTHCHECK)
+ 
++The runtime image has **no third-party Python dependencies**. `requirements.txt` pins host-only document creation
++packages. For reproducible releases, select and approve a base-image digest, then build with
++`--build-arg PYTHON_BASE_IMAGE=python:3.12-slim-bookworm@sha256:<approved-digest>`; the default image tag remains mutable.
++Scan the built image for known vulnerabilities as part of your CI release process.
++
+ The STIG data is baked into the image. After refreshing content, rebuild the image (`docker compose up -d --build`).
+ 
+ ---
+@@ -492,7 +502,8 @@ STIG_Explorer/
+ ├── tags/FMCC.csv       # editable tag list template
+ ├── docs/               # generated guide and per-STIG Word/Markdown documents
+ ├── data/raw/           # downloaded DISA source zips (git-ignored)
+-├── tests/test_core.py  # unit and integration tests
++├── tests/test_core.py  # existing unit and integration tests
++├── tests/test_security.py # injection, archive, CSV, API and download regression tests
+ ├── requirements.txt    # python-docx (Word output only)
+ ├── Dockerfile
+ └── docker-compose.yml
+@@ -501,7 +512,7 @@ STIG_Explorer/
+ **Tests:** `python -m unittest discover -s tests` covers setting extraction, topic classification, plain-language
+ titles, validation command generation, server roles, Ubuntu handling, the search index (including FTS injection),
+ tag compilation and matching, and the exported scripts. The script tests need Node.js; they generate the scripts,
+-syntax-check the Bash script with `bash -n`, check that unsafe commands are excluded and, if `pwsh` is installed, parse
++syntax-check the Bash script with `bash -n`, check the new allowlist and hostile-input regression cases and, if `pwsh` is installed, parse
+ the PowerShell script with the real PowerShell parser.
+ 
+ The front end is plain HTML, CSS and JavaScript with no build step and no external libraries. All data strings are
+@@ -541,8 +552,8 @@ HTML-escaped before display.
+ - STIG Explorer is a reference and triage aid, not a compliance scanner. Use SCAP/STIG Viewer/your enterprise tools for
+   official assessments.
+ - Topic explanations and generated commands are guidance. Where they and DISA's text differ, DISA's text governs.
+-- Validation scripts report values but don't decide pass/fail. The Bash script was run end to end on RHEL 9 and Ubuntu
+-  22.04 containers. The PowerShell script is syntax-checked with the PowerShell parser, but hasn't been run on Windows
+-  as part of this project's tests.
++- Validation scripts report values but don't decide pass/fail. After security hardening, only allowlisted command
++  forms run; most original checks are manual-only. This hardened version has **not** been run on production endpoints.
++  A real PowerShell parser test requires `pwsh` and is skipped where it is unavailable.
+ - Windows Server 2012/2012 R2 isn't available from DISA anymore (see [What's included](#whats-included)).
+ - FMCC is not a DISA designation. The FMCC tag is only as complete as the list you provide.
+diff --git a/STIG_Explorer/SECURITY_FIXES.md b/STIG_Explorer/SECURITY_FIXES.md
+new file mode 100644
+index 0000000..20bea42
+--- /dev/null
++++ b/STIG_Explorer/SECURITY_FIXES.md
+@@ -0,0 +1,60 @@
++# STIG Explorer — Security Remediation Notes
++
++**Updated:** 2026-11-16  
++**Based on:** `docs/STIG_Explorer_Security_Review_2026-11-16.md` (original findings)  
++**Scope:** Browser app, exported Bash/PowerShell checks, Python import/download pipeline, API, and Docker build.
++
++## What changed
++
++| Finding | Remediation in this release | Status |
++| --- | --- | --- |
++| STIG-01: Bash filter-to-script injection | All dynamic script-header metadata is forced to one line; PowerShell `#>` comment breaks are neutralized. User-supplied commands no longer enter a Bash heredoc. | **Patched; regression-tested** |
++| STIG-02: Unsafe automated validation | Default-deny command selection. Only narrowly defined, anchored read-only command patterns are automatically included in scripts. All remaining checks are listed as manual-only. CMD checks no longer create temporary batch files. | **Patched with stricter behavior** |
++| STIG-03: `/etc/shadow` hash disclosure | Commands reading `/etc/shadow` or `/etc/gshadow` are excluded from automatic execution; three known DISA-derived hash-printing checks are manual-only. Original reference text is retained in the viewer. | **Automated exposure blocked** |
++| STIG-04: ZIP/XML resource exhaustion | Bounded XML and nested-ZIP sizes, total expansion, depth, entry count and compression ratio. DTD and entity declarations are rejected. Downloads are also size-limited and saved atomically. | **Patched; regression-tested** |
++| STIG-05: CSV formula injection | New `web/security.js` escapes formula-like cells as literal text before CSV quoting, including whitespace-prefixed formulas. | **Patched; regression-tested** |
++| STIG-06: Unescaped HTML metadata | Variable class names and IDs are escaped. The XML parser rejects unknown severity values and malformed benchmark group/rule IDs. | **Patched for identified locations** |
++| STIG-07: API resource pressure | 4 KiB URL cap, 256-character search input caps, offset cap, 10-second socket timeout, 32 concurrent handlers, and 240 API requests/minute per IP. Default localhost-only binding retained; container memory and process limits added. | **Local hardening added** |
++| STIG-08: Build/dependency integrity | Docker runtime installs **no third-party Python packages**. Documentation-only dependencies are directly pinned, optional base-image digest override added, downloader records/verifies local SHA-256 provenance. | **Partially addressed; release approval still required** |
++
++## Material behavior change: automated coverage
++
++This update deliberately favors **manual review over automation**. On the original bundled November 2026 dataset, the new policy approves approximately **692 Windows command entries** and **358 Linux command entries** for export; thousands of additional check commands remain visible in the interface but are **not executed by generated scripts**.
++
++The allowlist in `web/scripts.js` intentionally recognizes only uncomplicated, specific read-only query patterns. To expand automatic coverage, review a new command or template for side effects, credential disclosure, privilege and runtime requirements, then add a narrowly scoped pattern and security regression tests. Do not merely extend a blacklist or allow arbitrary pipelines, shell expansion, `Invoke-Expression`, scripting blocks, or redirections.
++
++Review scripts and outputs before use, especially if running as administrator/root. The UI's original check commands are reference text and **must not be assumed safe to copy and run**.
++
++## Tests
++
++From `STIG_Explorer/`:
++
++```sh
++python -m unittest discover -s tests -v
++node --check web/scripts.js
++node --check web/security.js
++node --check web/app.js
++```
++
++**Observed in the preparation environment:** 41 unit/integration tests run, 40 passed and one skipped. The skip is the real PowerShell parser check because `pwsh` was unavailable. `bash -n` passed against the fully generated Bash export and against malicious-input regression examples. A local server smoke test successfully loaded `/api/health`, `/api/search`, and `/security.js`, verified HTTP 400 for oversized search terms, and verified presence of HTTP security headers.
++
++## Deployment and limitations
++
++1. Keep Compose bound to `127.0.0.1` for personal use. **The JSON API remains unauthenticated**. Team use requires an authenticated HTTPS reverse proxy, plus infrastructure-layer rate limits, access logging, and network restrictions. The built-in per-IP limiter is **not** a replacement for these controls.
++2. Rebuild after updating the source: `docker compose up -d --build`. The environment used for this patch did **not** provide Docker or PowerShell; neither an image build nor live Windows execution has been verified here. Test on non-production representative systems before rollout.
++3. The base image tag is **not pinned by default**. For controlled release builds, pass `--build-arg PYTHON_BASE_IMAGE=python:3.12-slim-bookworm@sha256:<verified-digest>`, using a trusted current digest appropriate for your platform; run an image and dependency CVE scan during the build.
++4. The `.sha256` sidecar produced by the downloader only shows what bytes were downloaded and detects subsequent accidental changes. It does **not** authenticate DISA's release; compare it against an independently trusted release hash where provided.
++5. The source ZIP contains previously generated STIG data and documentation. The documentation artifacts were **not re-generated** because the underlying source benchmark ZIPs are not included under `data/raw/`. The `README.md` and this file describe the updated export behavior.
++6. Read-only *query forms* cannot guarantee zero side effects from OS commands, vendor modules, plugins, or unusual environments. The changes significantly narrow command execution risk but are not a sandbox or a certification of compliance.
++
++## Files directly changed
++
++- `web/scripts.js` — command allowlist, safer script rendering, redaction/manual-only exclusions
++- `web/security.js` — testable CSV cell encoding
++- `web/app.js` and `web/index.html` — UI escaping and accurate safety notices
++- `stig_explorer/parse.py` — bounded XML/ZIP parsing and identifier validation
++- `stig_explorer/fetch.py` — download size, SHA-256 record, atomic download/cleanup
++- `stig_explorer/server.py` — request limits and concurrent-handler throttling
++- `Dockerfile`, `docker-compose.yml`, `requirements.txt` — runtime/deployment hardening
++- `tests/test_security.py`, `tests/test_core.py` — regression coverage and updated exporter expectations
++- `README.md` — updated operating guidance
+diff --git a/STIG_Explorer/docker-compose.yml b/STIG_Explorer/docker-compose.yml
+index fe92630..3c77bd4 100644
+--- a/STIG_Explorer/docker-compose.yml
++++ b/STIG_Explorer/docker-compose.yml
+@@ -3,10 +3,13 @@ services:
+     build: .
+     image: stig-explorer:latest
+     container_name: stig-explorer
+-    # Bound to localhost only. Change to "8080:8080" to expose on the network.
++    # Bound to localhost only. For team access, require a TLS/authenticated reverse proxy;
++    # do NOT expose the unauthenticated API directly to the network.
+     ports:
+       - "127.0.0.1:8080:8080"
+     read_only: true
++    mem_limit: 768m
++    pids_limit: 128
+     cap_drop: [ALL]
+     security_opt:
+       - no-new-privileges:true
+diff --git a/STIG_Explorer/docs/STIG_Explorer_Security_Review_2026-11-16.md b/STIG_Explorer/docs/STIG_Explorer_Security_Review_2026-11-16.md
+new file mode 100644
+index 0000000..be7ef5e
+--- /dev/null
++++ b/STIG_Explorer/docs/STIG_Explorer_Security_Review_2026-11-16.md
+@@ -0,0 +1,130 @@
++# STIG Explorer — Source Code Security Review
++
++**Review date:** 2026-11-16  
++**Source artifact:** `ISSO_Tools-main.zip` (77 ZIP entries; 43,659,582 bytes uncompressed)  
++**Scope:** `STIG_Explorer/` Python modules, browser JavaScript/HTML, bundled STIG data, Dockerfile, Compose file, and existing tests.  
++**Method:** Offline static code review, inspection of bundled data, unit tests, and controlled, non-destructive demonstrations of generated script content. No production system was scanned, no exported validation script was executed, and no penetration test against a deployed server was performed.
++
++## Executive summary
++
++The application is relatively well hardened for **local, read-only browsing**: the default Compose port is bound to `127.0.0.1`, the container runs as a non-root UID with a read-only filesystem and dropped Linux capabilities, the server sets a restrictive Content Security Policy, and the SQLite search uses query parameters. However, **the exported validation scripts require remediation before being used as privileged production diagnostics**.
++
++**Top priority:** A malicious search fragment can insert an executable line into a Bash export header. This was demonstrated without executing any generated script. More generally, the exporter assumes commands embedded in data are safe and does not enforce read-only execution. Additionally, actual bundled STIG checks would print password-hash fields to stdout if run with sufficient privileges.
++
++These are vulnerability findings in the source code; exploitation prerequisites are indicated below. They do not establish that the supplied ZIP contains active malware or that the default local web server is compromised.
++
++## Findings
++
++### STIG-01 — Search-fragment-to-Bash-script command injection (HIGH; confirmed)
++
++**Files:** `web/app.js:527-529`, `web/app.js:550-554`, `web/app.js:679-685`; `web/scripts.js:60-76`, `web/scripts.js:170-178`.
++
++**Issue:** The browser decodes the `q=` field from `location.hash` and assigns it to `state.q`. The export path includes that value in `filterSummary()`, then `describe()` inserts the entire filter string into a comment header. The `header()` function prefixes each input *string* with `#`, but does not prefix each *line* if the string includes a newline. As a result, newline characters embedded in the URL fragment become un-commented executable shell lines in the downloaded Bash script.
++
++**Safe proof:** With a synthetic filter string equivalent to `search "grep\nid\n#"`, the generated Bash header contains:
++
++```bash
++# Filter: search "grep
++id
++#"
++```
++
++`id` on its own line is executable shell code. A generated script containing that harmless marker passed `bash -n`. A separate static corpus check identified **247 bundled rules** whose searchable content contains all three terms `grep`, `id`, and `#`, so this is not merely a zero-result artificial filter scenario. **No generated script was executed.**
++
++**Impact:** A crafted link could influence the script a user downloads; if that user runs it (potentially under `sudo`, as documented), the injected line executes with the script's privileges. This is a user-assisted code-execution vulnerability, not direct unauthenticated server-side RCE.
++
++**Remediation:** Treat filter metadata as untrusted. Canonicalize all header text to one line (including `\r`, `\n`, Unicode line separators), ensure *each* output line is commented, and neutralize the `#>` terminator in PowerShell block comments. Prefer a structured header helper which explicitly encodes untrusted strings as data, not source-code fragments. Add tests that supply URL-style percent-encoded newlines and metacharacters, generate scripts, verify syntax, and verify every metadata line is a comment. Review both Bash and PowerShell variants.
++
++### STIG-02 — Exported validation commands are not read-only enforced (HIGH; confirmed unsafe design, exploitation conditional)
++
++**Files:** `web/scripts.js:16-57`, `web/scripts.js:124-147`, `web/scripts.js:198-215`; `stig_explorer/validate.py` (command generation).
++
++**Issue:** `pick()` rejects a handful of known commands, prompts/placeholders, and some syntactically malformed PowerShell commands. It does **not** ensure the remainder is read-only. Accepted Linux commands are executed using `bash -c "$cmd"`; accepted PowerShell commands execute in script blocks, and CMD checks execute through `cmd.exe`.
++
++**Safe proof:** The exporter accepted and embedded synthetic file-writing examples into both Bash and PowerShell exports. These examples were **not executed**. A synthetic line containing the literal Bash heredoc terminator `STIGX_EOF` was also accepted and allowed content to appear outside the intended heredoc in generated shell output. None of the checked-in validation commands contained that terminator at review time.
++
++**Prerequisites:** A modified or malicious imported STIG benchmark, altered generated dataset, or future mistake in generated/curated validation code; a user must subsequently download and run the generated script.
++
++**Impact:** A poisoned command may perform unauthorized modifications or worse under elevated credentials. This conflicts with the application's claimed read-only safety guarantee.
++
++**Remediation:** Default to **manual review** for unapproved commands; use reviewed, narrowly scoped templates with fixed options and allowlisted arguments rather than arbitrary shell strings; do not treat regex blacklists or balanced quotes as a sandbox. Reject embedded heredoc delimiters or replace heredoc generation with safely encoded literal data. Until corrected, disable privileged batch script exports or require human command review and a test environment before use. Add tests proving write, network, command-substitution, and multiline payloads are never selected for unattended execution.
++
++### STIG-03 — Password hashes can be printed by shipped exported checks (MEDIUM; current data confirmed)
++
++**Files:** `web/data/stig_data.js` (bundled generated data); `web/scripts.js:198-204` (prints command output).
++
++**Evidence:** Current data contains `cut -d: -f1,2 /etc/shadow` under **V-230232 (RHEL 8)**, **V-258231 (RHEL 9)** and **V-281221 (RHEL 10)**. The command prints username and full password-hash fields from `/etc/shadow` if run with sufficient privileges. The Bash check helper prints stdout, so hashes may enter terminal recordings, tickets or log captures. The application does not itself transmit them.
++
++**Remediation:** Mark those three checks manual-only or emit only the algorithm identifier without the full hash; redact secrets from exported-script output and discourage inclusion in tickets/logs. Preserve DISA's authoritative text in the reference view while preventing sensitive content from automated bulk output.
++
++### STIG-04 — Unbounded ZIP decompression and nested archive processing (MEDIUM; malicious input required)
++
++**Files:** `stig_explorer/parse.py:35-59`, `stig_explorer/parse.py:75-77`, `stig_explorer/parse.py:176-177`; `stig_explorer/fetch.py:64-70`.
++
++**Issue:** ZIP members are fully read into memory with `zf.read(info)` and nested ZIPs are recursively opened without total extracted-byte, per-member-size, compression-ratio, file-count or recursion-depth limits. XML is parsed in memory. A specially constructed benchmark archive could consume excessive memory, CPU or recursion depth during a developer/operator-triggered refresh. Download sizes are also not bounded. The workflow does **not** expose a remote upload API.
++
++**Remediation:** Impose depth and cumulative decompression limits, reject oversized members and excessive ZIP ratios, stream or bound downloads, limit XML sizes, and fail closed on suspicious input. Run refreshes with limited CPU and RAM and only from approved sources.
++
++### STIG-05 — CSV formula injection when exporting tainted content (MEDIUM; conditional)
++
++**File:** `web/app.js:505-519`.
++
++**Issue:** `exportCsv()` properly quotes CSV separators and quotation marks, but does not neutralize spreadsheet formula prefixes such as `=`, `+`, `-` and `@`. If externally sourced rule fields or local tag metadata are modified to contain formulas, opening the exported CSV in spreadsheet software can cause formula interpretation. No leading-formula values were identified in the currently bundled `title`, `plain`, `check`, `fix`, or `discussion` fields.
++
++**Remediation:** In addition to CSV quoting, prefix formula-like cells with a literal text marker (`'`) when a cell's first non-whitespace character is a formula introducer, and test spreadsheet-specific edge cases including tabs and carriage returns. Or offer a text-only export format.
++
++### STIG-06 — Unescaped metadata in HTML attributes (MEDIUM in offline/untrusted-data workflow; conditional)
++
++**Files:** `web/app.js:233-234`, `web/app.js:269-271`, `web/app.js:308-312`, `web/app.js:381-385`; `stig_explorer/parse.py:190-200`.
++
++**Issue:** Most content is escaped with `esc()`, but some interpolations—including `r.severity` inside class attributes and generated element IDs containing `r.vuln_id`—are placed into HTML without attribute escaping or strict validation. The parser copies severity and group identifiers from the supplied XCCDF without an output-safe schema check. A malicious source file could inject HTML attributes or elements after a data rebuild. The HTTP server's CSP mitigates inline-script execution, but the supported `file://` mode has no server-provided CSP.
++
++**Remediation:** Apply `esc()` in every interpolated HTML attribute; validate severity against `{high,medium,low}` and identifiers against expected character formats on import; avoid `innerHTML` for untrusted input when possible. Add malicious-XCCDF UI tests for both hosted and offline file modes.
++
++### STIG-07 — Additional availability risks when exposed on a network (LOW–MEDIUM; deployment dependent)
++
++**Files:** `stig_explorer/server.py:85-129`, `stig_explorer/server.py:165-188`, `stig_explorer/server.py:202-214`; `docker-compose.yml:5-9`.
++
++**Issue:** The JSON API has no authentication or request-rate limits and does not impose a maximum search-string length. The standard-library threaded HTTP server can be subjected to concurrent/slow request pressure, and the search materializes matching IDs before pagination. At the default localhost-only configuration this is less exposed. If bound to a network interface, the lack of TLS/authentication and rate/size limits becomes relevant. Public STIG data is not, by itself, confidential.
++
++**Remediation:** Keep the existing localhost binding; for team use, place a secure TLS/authentication reverse proxy in front, set request-size and rate controls, cap query length, and bound request concurrency and timeouts.
++
++### STIG-08 — Update and image reproducibility gaps (LOW / hardening)
++
++**Files:** `Dockerfile:2-9`; `requirements.txt:1-3`; `stig_explorer/fetch.py:64-70`.
++
++**Issue:** `python-docx==1.2.0` is pinned directly, but transitive dependencies are not locked, and `python:3.12-slim-bookworm` is a mutable tag without digest pinning. The DISA refresh operation uses HTTPS but no application-level expected-hash verification of the downloaded ZIP. These are build-integrity and reproducibility limitations, **not evidence of a specific vulnerable installed package**.
++
++**Remediation:** Pin the container image by digest as part of a controlled refresh process, produce a locked and audited dependency inventory, and retain download SHA-256 hashes and origin metadata for each release. Run container-image and dependency vulnerability scans against the actual image before deployment.
++
++## Verified strengths
++
++- Default Compose port is bound only to `127.0.0.1:8080` (`docker-compose.yml`).
++- Container has `read_only: true`, `cap_drop: [ALL]`, `no-new-privileges`, and non-root UID 10001 (`Dockerfile`, `docker-compose.yml`).
++- HTTP responses include a restrictive CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY` (`server.py:36-42`, `151-154`).
++- SQLite SQL construction uses parameter placeholders for user values (`server.py:85-116`); no conventional SQL injection was found in reviewed paths.
++- Normal UI display strings are generally passed through an HTML escaping helper (`web/app.js:17-18`), though the exceptions above must be fixed.
++- ZIP filename inspection of the **supplied project ZIP** found no `../` or absolute-path entries; ZIP integrity check passed.
++- The web UI does not require third-party browser JavaScript libraries or CDNs.
++
++## Tests performed
++
++1. Ran `python -m unittest discover -s tests -v`: **31 tests reported, 30 passed, 1 skipped** (the skipped PowerShell parser test requires `pwsh`).
++2. Confirmed with a harmless synthetic input that `pick()` accepts a Bash command that writes a local file and a PowerShell `Set-Content` command; generated strings were inspected but not run.
++3. Confirmed a synthetic Bash heredoc-breakout string passes through `pick()` into exported script text; it was not run.
++4. Produced a Bash export with a harmless `id` line injected via multiline filter text and confirmed the generated script passes `bash -n`. The script itself was **not executed**.
++5. Inspected the bundled 3,877 rules and 7,113 validation commands. Confirmed three `/etc/shadow` full-hash-output commands in shipped content.
++6. Checked the supplied ZIP for damaged members and unsafe entry paths: none found.
++
++## Prioritized remediation plan
++
++1. **Immediately:** Fix multiline/header injection in `scripts.js`, cover both shell languages, and add regression tests using URL fragments; suspend trusted use of exported scripts until patched.
++2. **Immediately:** Change the exporter to run only explicitly reviewed, known-read-only checks, not arbitrary DISA-extracted command text. Treat unsupported commands as manual-only.
++3. **Before administrator rollout:** Remove or redact `/etc/shadow` full-hash checks and review other sensitive output and high-cost checks.
++4. **Before accepting externally updated benchmarks:** Constrain ZIP recursion and decompression; validate imported XML identifiers and metadata; fix all unescaped HTML attributes.
++5. **Before spreadsheets/network rollout:** Sanitize CSV formula content; place any network-exposed deployment behind authenticated TLS reverse proxy with rate/resource controls.
++6. **For release assurance:** Add automated image/dependency scanning and reproducible dependency/image pinning.
++
++## Limitations and interpretation
++
++This review does not establish the presence or absence of every vulnerability. It is not a full dynamic penetration test, fuzz campaign, malware sandbox analysis, or CVE scan of an installed Docker image. There was no live Linux/Windows benchmark host, and the PowerShell parser was unavailable. Findings concerning **malicious source files** require an attacker to influence benchmark/tag/generated data. Findings concerning **script execution** require a user to download and execute exported scripts. The supplied project ZIP was evaluated; no user files or production systems were modified.
+diff --git a/STIG_Explorer/requirements.txt b/STIG_Explorer/requirements.txt
+index eea3853..30263d8 100644
+--- a/STIG_Explorer/requirements.txt
++++ b/STIG_Explorer/requirements.txt
+@@ -1,3 +1,5 @@
+-# Runtime (web server, build pipeline) uses only the Python standard library.
+-# python-docx is needed only to generate the Word (.docx) documents.
++# Host-only documentation generation dependencies, with transitive pins.
++# The Docker runtime intentionally installs none of these.
+ python-docx==1.2.0
++lxml==6.1.1
++typing_extensions==4.16.0
+diff --git a/STIG_Explorer/stig_explorer/fetch.py b/STIG_Explorer/stig_explorer/fetch.py
+index 8f47f1a..141269c 100644
+--- a/STIG_Explorer/stig_explorer/fetch.py
++++ b/STIG_Explorer/stig_explorer/fetch.py
+@@ -12,6 +12,9 @@ https://public.cyber.mil/stigs/downloads/ and drop them into data/raw/.
+ from __future__ import annotations
+ 
+ import argparse
++import hashlib
++import os
++import re
+ import concurrent.futures as cf
+ import sys
+ import urllib.error
+@@ -39,6 +42,7 @@ PRODUCTS = [
+ ]
+ 
+ CCI_LIST = "U_CCI_List.zip"
++MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
+ 
+ 
+ def _exists(url: str) -> bool:
+@@ -61,12 +65,40 @@ def latest(product: str, max_version: int = 6, max_release: int = 20) -> str | N
+     return None
+ 
+ 
+-def download(name: str, dest: Path) -> Path:
++def download(name: str, dest: Path, expected_sha256: str | None = None) -> Path:
++    """Bound downloads, publish atomically and record a locally observed SHA-256.
++
++    A local hash records integrity/provenance; independent authenticity requires
++    comparing it with a digest from a trusted external release source.
++    """
++    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.zip", name):
++        raise ValueError("Unsafe download filename")
++    if expected_sha256 is not None and not re.fullmatch(r"[a-fA-F0-9]{64}", expected_sha256):
++        raise ValueError("Expected SHA-256 must be 64 hexadecimal characters")
++    dest.mkdir(parents=True, exist_ok=True)
+     out = dest / name
++    temp = dest / (name + ".part")
++    digest = hashlib.sha256()
++    total = 0
+     req = urllib.request.Request(BASE + name, headers=UA)
+-    with urllib.request.urlopen(req, timeout=120) as r, open(out, "wb") as fh:
+-        while chunk := r.read(1 << 16):
+-            fh.write(chunk)
++    try:
++        with urllib.request.urlopen(req, timeout=120) as r, temp.open("wb") as fh:
++            length = r.headers.get("Content-Length")
++            if length and int(length) > MAX_DOWNLOAD_BYTES:
++                raise ValueError("DISA download exceeds maximum allowed size")
++            while chunk := r.read(1 << 16):
++                total += len(chunk)
++                if total > MAX_DOWNLOAD_BYTES:
++                    raise ValueError("DISA download exceeds maximum allowed size")
++                digest.update(chunk)
++                fh.write(chunk)
++        actual = digest.hexdigest()
++        if expected_sha256 and actual.lower() != expected_sha256.lower():
++            raise ValueError(f"SHA-256 verification failed for {name}")
++        os.replace(temp, out)
++        (dest / (name + ".sha256")).write_text(f"{actual}  {name}\n", encoding="ascii")
++    finally:
++        temp.unlink(missing_ok=True)
+     return out
+ 
+ 
+@@ -79,15 +111,24 @@ def fetch_all(dest: Path, products: list[str] | None = None, clean: bool = True)
+         if not name:
+             print(f"  ! no release found for {p}")
+             continue
+-        if clean:
+-            for old in dest.glob(f"{p}_V*R*_STIG.zip"):
+-                if old.name != name:
+-                    old.unlink()
+         if (dest / name).exists():
++            sidecar = dest / (name + ".sha256")
++            if sidecar.exists():
++                recorded = sidecar.read_text(encoding="ascii").split()[0]
++                actual = hashlib.sha256((dest / name).read_bytes()).hexdigest()
++                if recorded.lower() != actual:
++                    raise ValueError(f"Cached archive does not match its recorded hash: {name}")
++            else:
++                print(f"  ! {name} has no recorded SHA-256; verify its source before rebuilding")
+             print(f"  = {name} (already present)")
+         else:
+             print(f"  + {name}")
+             download(name, dest)
++        if clean:
++            for old in dest.glob(f"{p}_V*R*_STIG.zip"):
++                if old.name != name:
++                    old.unlink()
++                    (dest / (old.name + ".sha256")).unlink(missing_ok=True)
+         got.append(dest / name)
+     print(f"  + {CCI_LIST}")
+     got.append(download(CCI_LIST, dest))
+diff --git a/STIG_Explorer/stig_explorer/parse.py b/STIG_Explorer/stig_explorer/parse.py
+index 67aa6bd..78bfd1f 100644
+--- a/STIG_Explorer/stig_explorer/parse.py
++++ b/STIG_Explorer/stig_explorer/parse.py
+@@ -28,35 +28,91 @@ DESC_FIELDS = [
+ ]
+ 
+ 
++# Limits are intentionally conservative. Adjust only after reviewing trusted
++# source sizes; compressed archive metadata is untrusted until verified.
++MAX_XML_BYTES = 32 * 1024 * 1024
++MAX_NESTED_ZIP_BYTES = 64 * 1024 * 1024
++MAX_TOTAL_UNPACKED_BYTES = 256 * 1024 * 1024
++MAX_XML_FILES = 10_000
++MAX_ZIP_ENTRIES = 10_000
++MAX_NESTED_ZIP_DEPTH = 4
++MAX_COMPRESSION_RATIO = 300
++
++
++class _InputBudget:
++    def __init__(self) -> None:
++        self.bytes = 0
++        self.files = 0
++
++    def add(self, count: int) -> None:
++        self.bytes += count
++        self.files += 1
++        if self.bytes > MAX_TOTAL_UNPACKED_BYTES or self.files > MAX_XML_FILES:
++            raise ValueError("Input archive exceeds cumulative size or file-count limit")
++
++
++def _read_limited(stream, declared: int, limit: int, budget: _InputBudget) -> bytes:
++    if declared > limit:
++        raise ValueError(f"Archive member exceeds {limit} byte limit")
++    data = stream.read(limit + 1)
++    if len(data) > limit or len(data) != declared:
++        raise ValueError("Archive member exceeds limit or has inconsistent size")
++    budget.add(len(data))
++    return data
++
++
+ # --------------------------------------------------------------------------
+ # Input discovery
+ # --------------------------------------------------------------------------
+ 
+-def iter_xml_blobs(path: Path) -> Iterator[tuple[str, bytes]]:
+-    """Yield (name, bytes) for every XML file under path, descending into zips."""
++def iter_xml_blobs(path: Path, _budget: _InputBudget | None = None) -> Iterator[tuple[str, bytes]]:
++    """Yield bounded XML blobs, descending into archives with a shared budget."""
++    budget = _budget or _InputBudget()
+     if path.is_dir():
+         for child in sorted(path.rglob("*")):
+             if child.is_file() and child.suffix.lower() in (".xml", ".zip"):
+-                yield from iter_xml_blobs(child)
++                yield from iter_xml_blobs(child, budget)
+         return
+     if path.suffix.lower() == ".xml":
+-        yield path.name, path.read_bytes()
++        with path.open("rb") as source:
++            data = _read_limited(source, path.stat().st_size, MAX_XML_BYTES, budget)
++        yield path.name, data
+     elif path.suffix.lower() == ".zip":
+         with zipfile.ZipFile(path) as zf:
+-            yield from _iter_zip(zf)
+-
+-
+-def _iter_zip(zf: zipfile.ZipFile) -> Iterator[tuple[str, bytes]]:
+-    for info in zf.infolist():
+-        name = info.filename
+-        low = name.lower()
+-        if info.is_dir():
++            yield from _iter_zip(zf, budget, depth=0)
++
++
++def _iter_zip(zf: zipfile.ZipFile, budget: _InputBudget | None = None, depth: int = 0) -> Iterator[tuple[str, bytes]]:
++    budget = budget or _InputBudget()
++    if depth > MAX_NESTED_ZIP_DEPTH:
++        raise ValueError("Nested ZIP depth limit exceeded")
++    infos = zf.infolist()
++    if len(infos) > MAX_ZIP_ENTRIES:
++        raise ValueError("ZIP contains too many entries")
++    for info in infos:
++        low = info.filename.lower()
++        if info.is_dir() or not low.endswith((".xml", ".zip")):
+             continue
++        limit = MAX_XML_BYTES if low.endswith(".xml") else MAX_NESTED_ZIP_BYTES
++        if info.file_size > limit:
++            raise ValueError(f"Unsafe ZIP entry size: {info.filename}")
++        if info.file_size and (not info.compress_size or
++                info.file_size / info.compress_size > MAX_COMPRESSION_RATIO):
++            raise ValueError(f"Unsafe ZIP compression ratio: {info.filename}")
++        with zf.open(info) as stream:
++            data = _read_limited(stream, info.file_size, limit, budget)
+         if low.endswith(".xml"):
+-            yield Path(name).name, zf.read(info)
+-        elif low.endswith(".zip"):
+-            with zipfile.ZipFile(io.BytesIO(zf.read(info))) as inner:
+-                yield from _iter_zip(inner)
++            yield Path(info.filename).name, data
++        else:
++            with zipfile.ZipFile(io.BytesIO(data)) as inner:
++                yield from _iter_zip(inner, budget, depth + 1)
++
++
++def _check_xml(data: bytes) -> None:
++    if len(data) > MAX_XML_BYTES:
++        raise ValueError("XML input exceeds maximum size")
++    if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
++        raise ValueError("DTD and entity declarations are not permitted in STIG XML inputs")
+ 
+ 
+ def classify_xml(data: bytes) -> str:
+@@ -74,6 +130,7 @@ def classify_xml(data: bytes) -> str:
+ 
+ def parse_cci_list(data: bytes) -> dict[str, dict]:
+     """Return {CCI-ID: {definition, rev3: [...], rev4: [...], rev5: [...]}}."""
++    _check_xml(data)
+     root = ET.fromstring(data)
+     out: dict[str, dict] = {}
+     for item in root.iterfind(".//c:cci_item", CCI_NS):
+@@ -174,6 +231,7 @@ def platform_of(title: str) -> str:
+ 
+ 
+ def parse_benchmark(data: bytes, source_name: str = "") -> dict:
++    _check_xml(data)
+     root = ET.fromstring(data)
+     title = _clean(root.findtext("x:title", "", XCCDF_NS))
+     release_info = _clean(root.findtext("x:plain-text[@id='release-info']", "", XCCDF_NS))
+@@ -189,6 +247,11 @@ def parse_benchmark(data: bytes, source_name: str = "") -> dict:
+             continue
+         fields = _desc_fields(rule.findtext("x:description", "", XCCDF_NS))
+         severity = (rule.get("severity") or "medium").lower()
++        if severity not in SEVERITY_CAT:
++            raise ValueError(f"Unrecognized STIG severity in {source_name}: {severity[:80]}")
++        for field, value in (("Group", group.get("id", "")), ("Rule", rule.get("id", ""))):
++            if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", value):
++                raise ValueError(f"Invalid {field} ID in {source_name}")
+         ccis = [i.text.strip() for i in rule.iterfind("x:ident", XCCDF_NS)
+                 if i.text and i.text.strip().startswith("CCI-")]
+         legacy = [i.text.strip() for i in rule.iterfind("x:ident", XCCDF_NS)
+diff --git a/STIG_Explorer/stig_explorer/server.py b/STIG_Explorer/stig_explorer/server.py
+index 748a27e..12389ae 100644
+--- a/STIG_Explorer/stig_explorer/server.py
++++ b/STIG_Explorer/stig_explorer/server.py
+@@ -17,6 +17,9 @@ API:
+ from __future__ import annotations
+ 
+ import argparse
++from collections import deque
++import threading
++import time
+ import json
+ import os
+ import re
+@@ -32,6 +35,65 @@ from urllib.parse import parse_qs, urlparse
+ from . import build, tags
+ 
+ WEB = build.ROOT / "web"
++MAX_QUERY_LENGTH = 256
++MAX_URL_LENGTH = 4096
++MAX_FILTER_LENGTH = 256
++MAX_CONCURRENT_CLIENTS = 32
++SOCKET_TIMEOUT_SECONDS = 10
++RATE_LIMIT_PER_MINUTE = 240
++
++
++class RateLimiter:
++    """Bounded, per-address API request rate limiter (proxy limits still advised)."""
++    def __init__(self):
++        self.lock = threading.Lock()
++        self.hits = {}
++
++    def allow(self, address: str) -> bool:
++        now = time.monotonic()
++        with self.lock:
++            if len(self.hits) > 1024:
++                self.hits = {ip: hits for ip, hits in self.hits.items() if hits and hits[-1] >= now - 60}
++                if len(self.hits) > 1024:
++                    self.hits.clear()
++            hits = self.hits.setdefault(address, deque())
++            while hits and hits[0] < now - 60:
++                hits.popleft()
++            if len(hits) >= RATE_LIMIT_PER_MINUTE:
++                return False
++            hits.append(now)
++            return True
++
++
++RATE_LIMITER = RateLimiter()
++
++
++class LimitedThreadingHTTPServer(ThreadingHTTPServer):
++    """Prevent unlimited concurrent request-handler threads."""
++    def __init__(self, *args, **kwargs):
++        self._slots = threading.BoundedSemaphore(MAX_CONCURRENT_CLIENTS)
++        super().__init__(*args, **kwargs)
++
++    def process_request(self, request, client_address):
++        if not self._slots.acquire(blocking=False):
++            try:
++                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
++            except OSError:
++                pass
++            self.shutdown_request(request)
++            return
++        try:
++            super().process_request(request, client_address)
++        except BaseException:
++            self._slots.release()
++            raise
++
++    def process_request_thread(self, request, client_address):
++        try:
++            super().process_request_thread(request, client_address)
++        finally:
++            self._slots.release()
++
+ 
+ SECURITY_HEADERS = {
+     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+@@ -83,7 +145,11 @@ class Index:
+         return " AND ".join(toks)
+ 
+     def search(self, params: dict) -> dict:
++        if any(len(str(v)) > MAX_FILTER_LENGTH for v in params.values()):
++            raise ValueError("Search filter is too long")
+         q = params.get("q", "").strip()
++        if len(q) > MAX_QUERY_LENGTH:
++            raise ValueError("Search query is too long")
+         where, args = [], []
+         for key, col in (("stig", "m.stig"), ("severity", "m.severity")):
+             vals = [v for v in params.get(key, "").split(",") if v]
+@@ -104,6 +170,8 @@ class Index:
+         ctl = re.sub(r"\s+", "", params.get("nist", "").upper())
+         limit = max(1, min(int(params.get("limit", 50) or 50), 500))
+         offset = max(0, int(params.get("offset", 0) or 0))
++        if offset > 100_000:
++            raise ValueError("Search offset exceeds limit")
+         if q:
+             sql = ("SELECT m.rid FROM fts JOIN meta m ON m.rid = fts.rid WHERE fts MATCH ?"
+                    + "".join(f" AND {w}" for w in where) + " ORDER BY bm25(fts, 0, 10, 8, 4, 1)")
+@@ -144,6 +212,10 @@ class Index:
+ 
+ 
+ class Handler(SimpleHTTPRequestHandler):
++    def setup(self):
++        super().setup()
++        self.connection.settimeout(SOCKET_TIMEOUT_SECONDS)
++
+     index: Index = None  # set in main()
+     server_version = "STIGExplorer"
+     sys_version = ""
+@@ -163,10 +235,17 @@ class Handler(SimpleHTTPRequestHandler):
+         self.wfile.write(body)
+ 
+     def do_GET(self):  # noqa: N802
++        if len(self.path) > MAX_URL_LENGTH:
++            return self._json({"error": "Request URL is too long"}, HTTPStatus.REQUEST_URI_TOO_LONG)
+         url = urlparse(self.path)
+         if not url.path.startswith("/api/"):
+             return super().do_GET()
+-        params = {k: v[-1] for k, v in parse_qs(url.query).items()}
++        if not RATE_LIMITER.allow(self.client_address[0]):
++            return self._json({"error": "API rate limit exceeded"}, HTTPStatus.TOO_MANY_REQUESTS)
++        try:
++            params = {k: v[-1] for k, v in parse_qs(url.query, max_num_fields=20).items()}
++        except ValueError:
++            return self._json({"error": "Too many query parameters"}, HTTPStatus.BAD_REQUEST)
+         idx = self.index
+         try:
+             if url.path == "/api/health":
+@@ -211,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
+         return 1
+     Handler.index = Index(build.load(args.data))
+     handler = partial(Handler, directory=str(WEB))
+-    httpd = ThreadingHTTPServer((args.host, args.port), handler)
++    httpd = LimitedThreadingHTTPServer((args.host, args.port), handler)
+     # Exit promptly on SIGTERM (docker stop) - PID 1 ignores it by default.
+     def _stop(*_):
+         raise KeyboardInterrupt
+diff --git a/STIG_Explorer/tests/test_core.py b/STIG_Explorer/tests/test_core.py
+index 3e994c5..0b319a3 100644
+--- a/STIG_Explorer/tests/test_core.py
++++ b/STIG_Explorer/tests/test_core.py
+@@ -287,7 +287,7 @@ class ScriptExportTests(unittest.TestCase):
+ 
+     def test_powershell_structure(self):
+         self.assertIn("param([switch]$All, [string]$LogPath)", self.ps1)
+-        self.assertGreater(self.ps1.count("Invoke-PSCheck '"), 500)
++        self.assertGreater(self.ps1.count("Invoke-PSCheck '"), 300)
+         self.assertTrue(self.ps1.rstrip().endswith("if ($LogPath) { Stop-Transcript | Out-Null }"))
+ 
+     def test_powershell_parses(self):
+diff --git a/STIG_Explorer/tests/test_security.py b/STIG_Explorer/tests/test_security.py
+new file mode 100644
+index 0000000..25f7ba6
+--- /dev/null
++++ b/STIG_Explorer/tests/test_security.py
+@@ -0,0 +1,204 @@
++"""Regression tests for security fixes made after the November 2026 review."""
++from __future__ import annotations
++
++import hashlib
++import io
++import json
++import shutil
++import subprocess
++import tempfile
++import unittest
++import zipfile
++from pathlib import Path
++from unittest import mock
++
++from stig_explorer import build, fetch, parse, server
++
++
++@unittest.skipUnless(shutil.which("node"), "Node.js is required for export-security tests")
++class ScriptSecurityTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.web = build.ROOT / "web"
++
++    def run_node(self, js: str) -> str:
++        result = subprocess.run(["node", "-e", js, str(self.web)], text=True,
++                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
++        return result.stdout
++
++    def test_allowlist_rejects_modifying_or_ambiguous_commands(self):
++        self.run_node(r'''
++const assert=require('node:assert/strict');
++const S=require(process.argv[1]+'/scripts.js');
++const ok=(shell,cmd)=>S.approvedCommand({shell,cmd});
++assert.equal(ok('bash','sysctl kernel.randomize_va_space'), true);
++assert.equal(ok('bash','sudo rpm -q openssh-server'), true);
++assert.equal(ok('bash','systemctl is-enabled auditd'), true);
++assert.equal(ok('bash','sudo cut -d: -f1,2 /etc/shadow'), false);
++for (const cmd of ['touch /tmp/altered','sysctl -w kernel.randomize_va_space=0',
++  'sysctl kernel.randomize_va_space; id', 'sysctl kernel.randomize_va_space\nid',
++  'sudo rpm -q openssh-server$(id)', 'rm -rf /tmp/check', 'logger check',
++  'sysctl kernel.randomize_va_space > /tmp/altered', 'sysctl kernel.randomize_va_space`id`',
++  'sysctl kernel.randomize_va_space\u2028id', 'sudo grep root /etc/gshadow',
++  'sysctl kernel.randomize_va_space\nSTIGX_EOF\nid']) assert.equal(ok('bash',cmd),false,cmd);
++assert.equal(ok('powershell',"Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE' -Name 'UseTPMPIN' | Select-Object -ExpandProperty 'UseTPMPIN'"),true);
++assert.equal(ok('powershell','Confirm-SecureBootUEFI'),true);
++for (const cmd of ["Set-Content -Path C:\\marker -Value 1",'Get-ItemProperty; Remove-Item C:\\',
++  'Get-Tpm; Start-Process calc.exe', 'Get-Tpm\nRemove-Item C:\\'])
++  assert.equal(ok('powershell',cmd),false,cmd);
++assert.equal(ok('cmd','auditpol /get /subcategory:"Credential Validation"'),true);
++assert.equal(ok('cmd','reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE" /v "UseTPMPIN"'),true);
++assert.equal(ok('cmd','reg query "HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE" /v "UseTPMPIN" & del C:\\x'),false);
++''')
++
++    def test_untrusted_header_and_heredoc_payloads_remain_data(self):
++        output = self.run_node(r'''
++const assert=require('node:assert/strict');
++const S=require(process.argv[1]+'/scripts.js');
++const meta={version:'1.0\nid\n#',generated:'today\n#>\nid'};
++const base={platform:'linux',stig:'RHEL_9',vuln_id:'V-999',stig_id:'RHEL-999',
++ severity:'low',title:'Example',validate:[{shell:'bash',cmd:'sysctl kernel.randomize_va_space',expect:'1'},
++ {shell:'bash',cmd:'echo OK\nSTIGX_EOF\nid',expect:'no'}]};
++const sh=S.bash([base],meta,'grep\nid\n#');
++assert(sh.includes('check '));
++assert(!sh.includes("<<'STIGX_EOF'"));
++assert(!sh.split('\n').some(x=>/^id$/.test(x)));
++assert(sh.includes('# Filter: grep id #'));
++const win={...base,platform:'windows',stig:'WIN_11',validate:[{shell:'powershell',cmd:'Confirm-SecureBootUEFI',expect:'True'},
++ {shell:'powershell',cmd:'Set-Content C:\\marker X\n#>\nid',expect:''}]};
++const ps=S.powershell([win],meta,'hello\n#>\nid');
++assert.equal((ps.match(/#>/g)||[]).length,2); // only the intended two block comment closings
++assert(ps.includes('Filter: hello # > id'));
++assert(!ps.includes('Set-Content C:\\marker X\n#>'));
++const csv=require(process.argv[1]+'/security.js');
++for(const s of ['=1+1','\t+SUM(1,2)','\r\n@SUM(A1)',' -3','\u0000=HYPERLINK("a")'])
++  assert(csv.csvCell(s).startsWith('"\''),s);
++assert.equal(csv.csvCell('ordinary, "quoted"'), '"ordinary, ""quoted"""');
++process.stdout.write(sh);
++''')
++        with tempfile.TemporaryDirectory() as td:
++            shell_file = Path(td) / "safe_export.sh"
++            shell_file.write_text(output)
++            subprocess.run(["bash", "-n", str(shell_file)], check=True)
++
++    def test_shipped_shadow_checks_are_manual_only(self):
++        self.run_node(r'''
++const assert=require('node:assert/strict');
++const fs=require('fs');const src=fs.readFileSync(process.argv[1]+'/data/stig_data.js','utf8');
++const D=JSON.parse(src.slice(src.indexOf('{'),src.lastIndexOf('}')+1));
++const S=require(process.argv[1]+'/scripts.js');
++const matched=[];
++for(const r of D.rules){
++  const p=S.pick(r,r.platform);
++  for(const v of p.runnable) assert(S.approvedCommand(v),v.cmd);
++  for(const v of p.runnable) assert(!/\/etc\/shadow|\/etc\/gshadow/i.test(v.cmd),v.cmd);
++  if((r.validate||[]).some(v=>/cut\s+-d\s*:\s+-f1,2\s+\/etc\/shadow/.test(v.cmd))){
++    matched.push(r.vuln_id);
++    assert(!p.runnable.some(v=>/\/etc\/shadow/.test(v.cmd)));
++  }
++}
++assert.deepEqual(matched.sort(),['V-230232','V-258231','V-281221']);
++''')
++
++
++class ArchiveSecurityTests(unittest.TestCase):
++    def test_bomb_is_rejected_without_decompressing(self):
++        data = io.BytesIO()
++        with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as zf:
++            zf.writestr("bomb.xml", b"A" * 600_000)
++        with zipfile.ZipFile(io.BytesIO(data.getvalue())) as zf:
++            with self.assertRaisesRegex(ValueError, "compression ratio"):
++                list(parse._iter_zip(zf))
++
++    def test_nested_depth_is_bounded(self):
++        blob = b"<root />"
++        for _ in range(parse.MAX_NESTED_ZIP_DEPTH + 2):
++            buf = io.BytesIO()
++            with zipfile.ZipFile(buf, "w") as zf:
++                zf.writestr("nested.zip", blob)
++            blob = buf.getvalue()
++        with tempfile.TemporaryDirectory() as td:
++            archive = Path(td) / "archive.zip"
++            archive.write_bytes(blob)
++            with self.assertRaisesRegex(ValueError, "depth limit"):
++                list(parse.iter_xml_blobs(archive))
++
++    def test_xml_bytes_and_cumulative_count_are_bounded(self):
++        with tempfile.TemporaryDirectory() as td:
++            folder = Path(td)
++            (folder / "one.xml").write_bytes(b"a" * 25)
++            with mock.patch.object(parse, "MAX_XML_BYTES", 20):
++                with self.assertRaisesRegex(ValueError, "exceeds"):
++                    list(parse.iter_xml_blobs(folder))
++            (folder / "one.xml").write_bytes(b"<a/>")
++            (folder / "two.xml").write_bytes(b"<b/>")
++            with mock.patch.object(parse, "MAX_XML_FILES", 1):
++                with self.assertRaisesRegex(ValueError, "file-count"):
++                    list(parse.iter_xml_blobs(folder))
++
++    def test_xml_rejects_entities_and_invalid_identifiers(self):
++        with self.assertRaisesRegex(ValueError, "DTD"):
++            parse.parse_cci_list(b'<!DOCTYPE root [<!ENTITY x "secret">]><root>&x;</root>')
++        template = '''<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.1" id="bench">
++<title>Red Hat Enterprise Linux 9 Security Technical Implementation Guide</title>
++<Group id="{group}"><Rule id="rule-1" severity="{severity}">
++<version>RHEL-09-000001</version><title>Test</title></Rule></Group></Benchmark>'''
++        parse.parse_benchmark(template.format(group="V-200", severity="high").encode())
++        with self.assertRaisesRegex(ValueError, "Invalid Group ID"):
++            parse.parse_benchmark(template.format(group="bad&amp;quot; onclick=bad", severity="high").encode())
++        with self.assertRaisesRegex(ValueError, "Unrecognized STIG severity"):
++            parse.parse_benchmark(template.format(group="V-200", severity="bad&quot; onclick=bad").encode())
++
++
++class ApiSecurityTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.idx = server.Index(build.load())
++
++    def test_search_input_bounds(self):
++        for params in ({"q": "a" * (server.MAX_QUERY_LENGTH + 1)},
++                       {"tag": "x" * (server.MAX_FILTER_LENGTH + 1)},
++                       {"offset": "100001"}):
++            with self.assertRaises(ValueError):
++                self.idx.search(params)
++        self.assertGreater(self.idx.search({"q": "restrictanonymous"})["total"], 0)
++
++    def test_rate_limiter(self):
++        limiter = server.RateLimiter()
++        ip = "test-client"
++        for _ in range(server.RATE_LIMIT_PER_MINUTE):
++            self.assertTrue(limiter.allow(ip))
++        self.assertFalse(limiter.allow(ip))
++        self.assertTrue(limiter.allow("another-client"))
++
++
++class DownloadSecurityTests(unittest.TestCase):
++    class FakeResponse(io.BytesIO):
++        def __init__(self, data):
++            super().__init__(data)
++            self.headers = {"Content-Length": str(len(data))}
++
++    def test_atomic_bounded_download_and_recorded_digest(self):
++        payload = b"test ZIP bytes"
++        with tempfile.TemporaryDirectory() as td:
++            target = Path(td)
++            with mock.patch.object(fetch.urllib.request, "urlopen", return_value=self.FakeResponse(payload)):
++                out = fetch.download("test.zip", target, hashlib.sha256(payload).hexdigest())
++            self.assertEqual(out.read_bytes(), payload)
++            self.assertIn(hashlib.sha256(payload).hexdigest(), (target / "test.zip.sha256").read_text())
++            self.assertFalse((target / "test.zip.part").exists())
++            with mock.patch.object(fetch.urllib.request, "urlopen", return_value=self.FakeResponse(payload)):
++                with self.assertRaisesRegex(ValueError, "verification failed"):
++                    fetch.download("test.zip", target, "0" * 64)
++            self.assertEqual(out.read_bytes(), payload)
++            with mock.patch.object(fetch.urllib.request, "urlopen", return_value=self.FakeResponse(payload)):
++                with mock.patch.object(fetch, "MAX_DOWNLOAD_BYTES", 5):
++                    with self.assertRaisesRegex(ValueError, "maximum"):
++                        fetch.download("too_large.zip", target)
++            self.assertFalse((target / "too_large.zip.part").exists())
++            with self.assertRaisesRegex(ValueError, "Unsafe download filename"):
++                fetch.download("../bad.zip", target)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/STIG_Explorer/web/app.js b/STIG_Explorer/web/app.js
+index 35a698b..e6d5d93 100644
+--- a/STIG_Explorer/web/app.js
++++ b/STIG_Explorer/web/app.js
+@@ -231,9 +231,9 @@
+       const s = stigByKey[r.stig];
+       const t = D.topics[r.topics[0]];
+       return `<li class="rule-item" data-id="${esc(r.id)}" tabindex="0" ${state.selected === r ? 'aria-current="true"' : ""}>
+-        <span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
++        <span class="sev ${esc(r.severity)}">${SEV_LABEL[r.severity]}</span>
+         <div class="title">${tagBadges(r)}${highlight(r.title, terms)}</div>
+-        <div class="meta"><span class="chip ${s.family}">${esc(shortProduct(s.product))}</span>
++        <div class="meta"><span class="chip ${esc(s.family)}">${esc(shortProduct(s.product))}</span>
+           <span>${esc(r.stig_id)}</span><span>${esc(r.vuln_id)}</span>${roleChip(r)}<span class="chip">${esc(t.name)}</span></div>
+       </li>`;
+     }).join("");
+@@ -245,7 +245,7 @@
+     more.textContent = `Show more (${(state.results.length - state.shown).toLocaleString()} remaining)`;
+   }
+ 
+-  const roleChip = (r) => (ROLE_LABEL[r.role] ? `<span class="chip role-${r.role}">${esc(ROLE_LABEL[r.role])}</span>` : "");
++  const roleChip = (r) => (ROLE_LABEL[r.role] ? `<span class="chip role-${esc(r.role)}">${esc(ROLE_LABEL[r.role])}</span>` : "");
+ 
+   const shortProduct = (p) => p.replace("Red Hat Enterprise Linux", "RHEL").replace("Microsoft ", "").replace("Canonical ", "");
+ 
+@@ -267,8 +267,8 @@
+   }
+ 
+   function codeBlock(label, text, id) {
+-    return `<div class="code-head"><h4>${esc(label)}</h4><button class="copy" data-copy="${id}">Copy</button></div>
+-      <pre class="code" id="${id}">${esc(text)}</pre>`;
++    return `<div class="code-head"><h4>${esc(label)}</h4><button class="copy" data-copy="${esc(id)}">Copy</button></div>
++      <pre class="code" id="${esc(id)}">${esc(text)}</pre>`;
+   }
+ 
+   function genericHtml(r) {
+@@ -276,7 +276,7 @@
+     const [sl, sp] = D.meta.severity_plain[r.severity];
+     let h = `<h4>In plain terms</h4><p class="plain-lead">${esc(r.plain)}</p>
+       <h4>Why it matters</h4><p>${esc(t.generic)}</p>
+-      <h4>How important is it?</h4><p class="callout"><span class="sev ${r.severity}">${esc(sl)}</span> ${esc(sp)}</p>`;
++      <h4>How important is it?</h4><p class="callout"><span class="sev ${esc(r.severity)}">${esc(sl)}</span> ${esc(sp)}</p>`;
+     if (r.glossary.length) {
+       h += `<h4>Key terms</h4><dl class="gloss">${r.glossary.map((g) => `<dt>${esc(g.term)}</dt><dd>${esc(g.definition)}</dd>`).join("")}</dl>`;
+     }
+@@ -294,8 +294,10 @@
+   }
+ 
+   function unsafeNote(cmd) {
+-    const why = window.STIGX_SCRIPT ? window.STIGX_SCRIPT.unsafeReason(cmd) : "";
+-    return why ? `<p class="val-warn">⚠ Use with care: this command ${esc(why)}. It is left out of exported scripts.</p>` : "";
++    const S = window.STIGX_SCRIPT;
++    if (!S || S.approvedCommand(cmd)) return "";
++    const why = S.unsafeReason(cmd.cmd) || "is not on the approved read-only export allowlist";
++    return `<p class="val-warn">⚠ Manual review: this command ${esc(why)}. It will not run automatically in exported scripts.</p>`;
+   }
+ 
+   function validationHtml(r) {
+@@ -304,13 +306,13 @@
+     if (!v.length) {
+       return h + `<p class="muted">No single command can validate this rule. It is a procedural or manual check, so follow the DISA check procedure below.</p>`;
+     }
+-    h += `<p class="small muted">Copy a command into ${r.platform === "windows" ? "PowerShell or Command Prompt (run as Administrator where noted)" : "a terminal"} instead of browsing ${r.platform === "windows" ? "the Group Policy editor" : "configuration files"}. Commands only read settings; they change nothing. DISA's check procedure remains the authoritative test.</p>`;
++    h += `<p class="small muted">Review a command before copying it into ${r.platform === "windows" ? "PowerShell or Command Prompt (run as Administrator where noted)" : "a terminal"} instead of browsing ${r.platform === "windows" ? "the Group Policy editor" : "configuration files"}. Some original checks can change settings or expose sensitive data. Only allowlisted read-only queries are included in exported scripts. DISA's check procedure remains the authoritative test.</p>`;
+     v.forEach((c, i) => {
+       const id = `val-${r.vuln_id}-${i}`;
+       h += `<div class="val"><div class="val-head"><span class="shell ${esc(c.shell)}">${esc(SHELL_LABEL[c.shell] || c.shell)}</span>
+-        <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${id}">Copy</button></div>
+-        <pre class="code" id="${id}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}
+-        ${unsafeNote(c.cmd)}</div>`;
++        <span class="muted small">${esc(SRC_LABEL[c.src] || "")}</span><span class="spacer"></span><button class="copy" data-copy="${esc(id)}">Copy</button></div>
++        <pre class="code" id="${esc(id)}">${esc(c.cmd)}</pre>${c.expect ? `<p class="val-expect"><b>Expected:</b> ${esc(c.expect)}</p>` : ""}
++        ${unsafeNote(c)}</div>`;
+     });
+     return h;
+   }
+@@ -374,15 +376,15 @@
+     const eqHtml = eq.length ? `<section class="level-block"><header><h3>Related rules in other STIGs</h3>
+       <span class="muted small">Same requirement or setting on other platforms/versions</span></header>
+       <div class="level-body"><ul class="eq-list">${eq.sort(byStig).map((x) =>
+-        `<li><span class="chip ${stigByKey[x.stig].family}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
+-         <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${x.severity}">${SEV_LABEL[x.severity]}</span>
++        `<li><span class="chip ${esc(stigByKey[x.stig].family)}">${esc(shortProduct(stigByKey[x.stig].product))}</span>
++         <a data-goto="${esc(x.id)}">${esc(x.stig_id)}</a> <span class="sev ${esc(x.severity)}">${SEV_LABEL[x.severity]}</span>
+          <span class="muted">${esc(x.title)}</span></li>`).join("")}</ul></div></section>` : "";
+     const nist5 = r._nist.rev5.join(", ");
+     $("#detail").innerHTML = `
+       <div class="d-head">
+         <button class="btn ghost close-detail" id="closeDetail">← Back to results</button>
+-        <div class="d-ids"><span class="sev ${r.severity}">${SEV_LABEL[r.severity]}</span>
+-          <span class="chip ${s.family}">${esc(s.product)} ${esc(s.label)}</span>
++        <div class="d-ids"><span class="sev ${esc(r.severity)}">${SEV_LABEL[r.severity]}</span>
++          <span class="chip ${esc(s.family)}">${esc(s.product)} ${esc(s.label)}</span>
+           <code>${esc(r.vuln_id)}</code><code>${esc(r.stig_id)}</code><code>${esc(r.id)}</code>${roleChip(r)}</div>
+         <h2>${tagBadges(r)}${esc(r.title)}</h2>
+         ${r._tags.map(([t, notes]) => `<p class="tag-callout" data-tagcolor="${esc(tagDef[t].color)}"><span class="tag-badge" data-tagcolor="${esc(tagDef[t].color)}">${esc(tagDef[t].label)}</span>
+@@ -506,7 +508,7 @@ ${t.pro}
+   function exportCsv() {
+     const cols = ["STIG", "Release", "Vuln ID", "STIG ID", "Rule ID", "Severity", "Title", "Plain language", "Topic", "SRG", "Server role", "CCI",
+       "NIST 800-53 Rev5", "NIST 800-53 Rev4", "NIST 800-53 Rev3", "Settings", "Validation commands", "Check", "Fix", "Tags"];
+-    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
++    const q = window.STIGX_SECURITY.csvCell;
+     const lines = [cols.map(q).join(",")];
+     for (const r of state.results) {
+       const s = stigByKey[r.stig];
+@@ -682,7 +684,11 @@ ${t.pro}
+     const v = location.hash.match(/view=(rules|topics|about)/);
+     if (v) setView(v[1]);
+     const q = location.hash.match(/[#&]q=([^&]*)/);
+-    if (q) { state.q = decodeURIComponent(q[1].replace(/\+/g, " ")); $("#q").value = state.q; runSearch(); }
++    if (q) {
++      try { state.q = decodeURIComponent(q[1].replace(/\+/g, " ")).slice(0, 256); }
++      catch { state.q = ""; }
++      $("#q").value = state.q; runSearch();
++    }
+     const m = location.hash.match(/rule=([^&]+)/);
+     if (m) {
+       const id = decodeURIComponent(m[1]);
+diff --git a/STIG_Explorer/web/index.html b/STIG_Explorer/web/index.html
+index 8d8c8c6..fab5c52 100644
+--- a/STIG_Explorer/web/index.html
++++ b/STIG_Explorer/web/index.html
+@@ -99,7 +99,7 @@
+         </select>
+         <button id="csvBtn" class="btn ghost" title="Export the filtered rules to CSV">Export CSV</button>
+         <details class="menu" id="scriptMenu">
+-          <summary class="btn ghost" title="Download a read-only script that runs the validation commands for the filtered rules">Export script ▾</summary>
++          <summary class="btn ghost" title="Download a script with only approved read-only checks; other commands are manual-only">Export script ▾</summary>
+           <div class="menu-pop" role="menu">
+             <button role="menuitem" data-script="ps1"><b>PowerShell (.ps1)</b><span id="ps1Count" class="muted small"></span></button>
+             <button role="menuitem" data-script="sh"><b>Bash (.sh)</b><span id="shCount" class="muted small"></span></button>
+@@ -133,6 +133,7 @@
+ 
+   <script src="data/stig_data.js"></script>
+   <script src="data/tags.js"></script>
++  <script src="security.js"></script>
+   <script src="scripts.js"></script>
+   <script src="app.js"></script>
+ </body>
+diff --git a/STIG_Explorer/web/scripts.js b/STIG_Explorer/web/scripts.js
+index d3342f6..f3a0658 100644
+--- a/STIG_Explorer/web/scripts.js
++++ b/STIG_Explorer/web/scripts.js
+@@ -13,67 +13,106 @@
+   // Placeholders DISA uses for values the reader must fill in, e.g. "<filename>", "[user]".
+   const PLACEHOLDER = /\[[A-Za-z][A-Za-z _-]*\]|<[A-Za-z][A-Za-z _/-]*>/;
+ 
+-  // DISA check commands that must not run unattended: they can hang, change state or take very long.
++  // Only approved read-only command forms may be run automatically. Source data
++  // (including DISA check text) is not trusted executable code. Everything not
++  // explicitly recognized below is presented as MANUAL ONLY in the export.
++  // This is a deliberately small list, not a general-purpose shell parser.
+   const UNSAFE = [
+-    [/\bsshd\s+-d/, "starts a debug copy of sshd, which can wait for a connection and hang"],
+-    [/\blogger\b/, "writes a test entry to the system log"],
+-    [/\bapt(-get)?\s+download\b|\bdpkg-deb\b/, "downloads a package file from the network"],
+-    [/\baide(\.wrapper)?\b[^|;]*--check/, "a full AIDE scan can take many minutes; run it separately"],
+-    [/\brpm\s+-Va\b/, "verifies every installed package and can take many minutes; run it separately"],
++    [/\/(?:etc\/)?(?:shadow|gshadow)(?:\b|\/)|\\(?:SAM|SECURITY)(?:\b|\\)/i,
++      "may expose credential material; review locally and do not collect raw output"],
++    [/\bsshd\s+-d/, "may start an interactive daemon"],
++    [/\blogger\b/, "writes to the system log"],
++    [/\bapt(?:-get)?\s+download\b|\bdpkg-deb\b/, "downloads or extracts files"],
++    [/\baide(?:\.wrapper)?\b[^|;]*--check/, "runs an expensive full-system scan"],
++    [/\brpm\s+-Va\b/, "runs an expensive full-system scan"],
+   ];
+-  const unsafeReason = (cmd) => (UNSAFE.find(([re]) => re.test(cmd)) || [, ""])[1];
++  const unsafeReason = (cmd) => (UNSAFE.find(([re]) => re.test(String(cmd ?? ""))) || [, ""])[1];
+ 
+-  const psq = (s) => "'" + String(s ?? "").replace(/'/g, "''") + "'";            // PowerShell single-quoted
+-  const shq = (s) => "'" + String(s ?? "").replace(/'/g, "'\\''") + "'";          // POSIX single-quoted
+-  const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
++  const psq = (s) => "'" + String(s ?? "").replace(/'/g, "''") + "'";
++  const shq = (s) => "'" + String(s ?? "").replace(/'/g, "'\\''") + "'";
++  const oneLine = (s) => String(s ?? "").replace(/[\s\u2028\u2029\u0085\u0000-\u001f\u007f]+/g, " ").trim();
++  const psComment = (s) => oneLine(s).replace(/#>/g, "# >");
+   const tagged = (r) => ((r._tagLabels || []).length ? `[${r._tagLabels.join(", ")}] ` : "") + oneLine(r.title);
++  const PACKAGE = "[A-Za-z0-9][A-Za-z0-9._+@-]*";
++  const SYSCTL_KEY = "[A-Za-z][A-Za-z0-9_.-]*";
++  const SERVICE = "[A-Za-z0-9][A-Za-z0-9_.@-]*";
++  const bashSafe = [
++    new RegExp(`^(?:sudo )?sysctl ${SYSCTL_KEY}$`),
++    new RegExp(`^(?:sudo )?rpm -q ${PACKAGE}$`),
++    new RegExp(`^(?:sudo )?dpkg -s ${PACKAGE}$`),
++    new RegExp(`^(?:sudo )?systemctl (?:is-enabled|is-active) ${SERVICE}$`),
++    /^(?:sudo )?(?:getenforce|sestatus|lsblk --tree|blkid|nmcli device(?: status)?|pro status)$/, 
++    /^(?:sudo )?firewall-cmd (?:--state|--list-all)$/,
++    /^(?:sudo )?update-crypto-policies --show$/,
++    new RegExp(`^(?:sudo )?getsebool ${SYSCTL_KEY}$`),
++    /^(?:sudo )?gsettings get [A-Za-z0-9_.-]+ [A-Za-z0-9_.-]+$/,
++  ];
++  // Registry location and value names are *data*, not PowerShell expressions.
++  // Restrict the registry root and character set; disallow interpolation, pipes,
++  // redirection, semicolons, quotes inside values, and command substitutions.
++  const PS_REG = /^Get-ItemProperty -Path 'HKLM:\\(?:SOFTWARE\\Policies|SYSTEM\\CurrentControlSet\\Control)\\([A-Za-z0-9_ .\\-]+)' -Name '([A-Za-z0-9_ .-]+)' \| Select-Object -ExpandProperty '([A-Za-z0-9_ .-]+)'$/;
++  const psSimple = new Set([
++    "Confirm-SecureBootUEFI", "Get-Tpm", "Get-WindowsFeature", "Get-BitLockerVolume",
++    "Get-MpComputerStatus", "Get-NetFirewallProfile", "Get-LocalUser", "Get-Volume",
++    "Get-NetAdapter", "Get-SmbShare", "Get-WindowsCapability", "Get-Service",
++  ]);
++  const cmdSafe = [
++    /^reg query "HKLM\\(?:SOFTWARE\\Policies|SYSTEM\\CurrentControlSet\\Control)\\[A-Za-z0-9_ .\\-]+" \/v "[A-Za-z0-9_ .-]+"$/,
++    /^auditpol \/get \/subcategory:"[A-Za-z0-9_ .\/&()-]+"$/,
++    /^net (?:accounts|share)$/,
++    /^manage-bde -status$/,
++    /^netsh interface portproxy show all$/,
++  ];
+ 
+-  // A DISA-quoted PowerShell command is embedded as code, so it must parse. Reject
+-  // anything with unbalanced quotes/brackets or a dangling operator (truncated text).
+-  function psSafe(cmd) {
+-    if ((cmd.match(/"/g) || []).length % 2 || (cmd.match(/'/g) || []).length % 2) return false;
+-    for (const [o, c] of [["(", ")"], ["{", "}"], ["[", "]"]]) {
+-      if (cmd.split(o).length !== cmd.split(c).length) return false;
++  function approvedCommand(v) {
++    if (!v || typeof v.cmd !== "string" || !v.cmd || v.cmd.length > 1024) return false;
++    const cmd = v.cmd;
++    // Reject multiline, control characters, shell expansion and dangerous output
++    // sources before checking the limited, anchored command patterns.
++    if (/[\r\n\u0000-\u001f\u007f\u0085\u2028\u2029]/.test(cmd) || unsafeReason(cmd)) return false;
++    if (v.shell === "bash") return bashSafe.some((re) => re.test(cmd));
++    if (v.shell === "powershell") {
++      const m = PS_REG.exec(cmd);
++      if (m) return m[2] === m[3];
++      return psSimple.has(cmd) || /^Get-CimInstance Win32_OperatingSystem$/.test(cmd);
+     }
+-    return !/(\s-\w+|\||,)\s*$/.test(cmd);
++    if (v.shell === "cmd") return cmdSafe.some((re) => re.test(cmd));
++    return false;
+   }
+ 
+-  // Choose which of a rule's commands go into a script for `platform`.
++  // Retained for API compatibility; command selection instead uses approvedCommand().
++  function psSafe(cmd) { return approvedCommand({ shell: "powershell", cmd }); }
++
+   function pick(rule, platform) {
+     const runnable = [], manual = [];
+-    const cmds = (rule.validate || []).filter((v) => (platform === "windows" ? v.shell !== "bash" : v.shell === "bash"));
++    const cmds = (rule.validate || []).filter((v) => (platform === "windows"
++      ? v.shell === "powershell" || v.shell === "cmd" : v.shell === "bash"));
+     const hasPs = cmds.some((v) => v.shell === "powershell");
+     for (const v of cmds) {
+-      if (PLACEHOLDER.test(v.cmd)) { manual.push({ v, why: "needs a value filled in before running" }); continue; }
+-      const unsafe = unsafeReason(v.cmd);
+-      if (unsafe) { manual.push({ v, why: unsafe }); continue; }
+-      if (platform === "windows") {
+-        // reg query / secedit duplicate the PowerShell form of the same check.
+-        if (v.shell === "cmd" && hasPs && /^(reg query|secedit)\b/i.test(v.cmd)) continue;
+-        if (v.shell === "powershell" && !psSafe(v.cmd)) { manual.push({ v, why: "incomplete command text in the check procedure" }); continue; }
+-      }
+-      runnable.push(v);
++      // Avoid duplicate registry checks when the PowerShell version is selected.
++      if (platform === "windows" && v.shell === "cmd" && hasPs && /^reg query\b/i.test(v.cmd)
++          && cmds.some((x) => x.shell === "powershell" && approvedCommand(x))) continue;
++      if (approvedCommand(v)) runnable.push(v);
++      else manual.push({ v, why: unsafeReason(v.cmd) || "not in the reviewed read-only command allowlist" });
+     }
+     return { runnable, manual };
+   }
+ 
+   function header(lines, comment) {
+-    return lines.map((l) => (l ? `${comment} ${l}` : comment));
++    return lines.map((l) => `${comment}${oneLine(l) ? " " + oneLine(l) : ""}`);
+   }
+ 
+   function describe(rules, meta, filterText, platform) {
+-    const stigs = [...new Set(rules.map((r) => r.stig))];
++    const stigs = [...new Set(rules.map((r) => oneLine(r.stig)))];
+     return [
+-      `Generated by STIG Explorer ${meta.version} on ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+-      `Data: ${meta.generated}. ${rules.length} rules from: ${stigs.join(", ")}`,
+-      filterText ? `Filter: ${filterText}` : "",
++      `Generated by STIG Explorer ${oneLine(meta.version)} on ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
++      `Data: ${oneLine(meta.generated)}. ${rules.length} rules from: ${stigs.join(", ")}`,
++      filterText ? `Filter: ${oneLine(filterText)}` : "",
+       "",
+-      platform === "windows"
+-        ? "READ-ONLY: commands only query settings. Nothing is changed; secedit and the CMD checks write temporary files to %TEMP%."
+-        : "READ-ONLY: every command only queries a setting. Nothing on the system is changed.",
+-      "Each check prints the rule, the expected result and the command output for you to review.",
+-      "The script does not decide pass/fail. DISA's check procedure remains the authoritative test.",
+-    ].filter((l, i, a) => l !== "" || a[i - 1] !== "");
++      "SAFETY: only reviewed, allowlisted read-only command forms are run automatically.",
++      "Other checks are MANUAL ONLY. Review the generated script and output before running with elevated privileges.",
++      "Commands are not a definitive compliance test. DISA's check procedure remains authoritative.",
++    ].map((l) => platform === "windows" ? psComment(l) : oneLine(l));
+   }
+ 
+   // ------------------------------------------------------------- PowerShell
+@@ -82,7 +121,7 @@
+     const L = [];
+     L.push("<#");
+     L.push("  STIG Explorer validation script (PowerShell)");
+-    for (const l of describe(win, meta, filterText, "windows")) L.push("  " + l);
++    for (const l of describe(win, meta, filterText, "windows")) L.push("  " + psComment(l));
+     L.push("");
+     L.push("  Run from an elevated PowerShell prompt:");
+     L.push("    powershell.exe -ExecutionPolicy Bypass -File .\\stig_validation.ps1 [-All] [-LogPath results.txt]");
+@@ -95,7 +134,7 @@
+     L.push("if ($LogPath) { Start-Transcript -Path $LogPath | Out-Null }");
+     L.push("$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()");
+     L.push("if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {");
+-    L.push("    Write-Warning 'Not running elevated: secedit, auditpol and some registry checks will fail.'");
++    L.push("    Write-Warning 'Some approved read-only queries may require elevated access.'");
+     L.push("}");
+     L.push("$os = Get-CimInstance Win32_OperatingSystem");
+     L.push("$script:IsDC = ($os.ProductType -eq 2)");
+@@ -130,10 +169,8 @@
+     L.push("function Invoke-CmdCheck([string]$Expected, [string]$Command) {");
+     L.push("    Write-Host \"  CMD> $Command\" -ForegroundColor DarkCyan");
+     L.push("    Write-Host \"  Expected: $Expected\" -ForegroundColor Yellow");
+-    L.push("    # Run through a temporary .cmd file so quoting and %VARIABLES% behave exactly as in Command Prompt.");
+-    L.push("    $file = Join-Path $env:TEMP 'stigx_check.cmd'");
+-    L.push("    Set-Content -Path $file -Value \"@echo off`r`n$Command\" -Encoding ASCII");
+-    L.push("    & cmd.exe /d /c $file 2>&1 | Out-String -Width 250 | Write-Host");
++    L.push("    # Only strict, read-only CMD command forms were selected during generation.");
++    L.push("    & cmd.exe /d /c $Command 2>&1 | Out-String -Width 250 | Write-Host");
+     L.push("}");
+     const manualAll = [];
+     for (const r of win) {
+@@ -161,8 +198,8 @@
+     if (!manualAll.length && !none.length) return [];
+     const L = [""];
+     L.push("<# Manual checks (not run by this script)");
+-    for (const [r, m] of manualAll) L.push(`   ${r.vuln_id} / ${r.stig_id}: ${m.why}: ${oneLine(m.v.cmd)}`.replace(/#>/g, "# >"));
+-    for (const r of none) L.push(`   ${r.vuln_id} / ${r.stig_id}: procedural; follow the DISA check procedure. ${oneLine(r.title)}`.replace(/#>/g, "# >"));
++    for (const [r, m] of manualAll) L.push(psComment(`   ${r.vuln_id} / ${r.stig_id}: ${m.why}: ${oneLine(m.v.cmd)}`));
++    for (const r of none) L.push(psComment(`   ${r.vuln_id} / ${r.stig_id}: procedural; follow the DISA check procedure. ${oneLine(r.title)}`));
+     L.push("#>");
+     return L;
+   }
+@@ -195,11 +232,11 @@
+     L.push("  RUN=$((RUN + 1))");
+     L.push("  printf '\\n%s\\n%s  [%s]  %s\\n' \"$(printf '=%.0s' $(seq 1 100))\" \"$2\" \"$3\" \"$4\"");
+     L.push("}");
+-    L.push("check() {  # check EXPECTED <<'STIGX_EOF' ... STIGX_EOF");
+-    L.push("  local cmd; cmd=$(cat)");
++    L.push("check() {  # check COMMAND EXPECTED (only reviewed read-only commands)");
++    L.push("  local cmd=$1 expected=$2");
+     L.push("  # Already root: drop sudo so the checks also work where sudo isn't installed.");
+-    L.push("  [ $IS_ROOT -eq 1 ] && cmd=$(printf '%s' \"$cmd\" | sed -E 's/(^|[|;&(] *|xargs +)sudo +/\\1/g')");
+-    L.push("  printf '  $ %s\\n  Expected: %s\\n' \"$cmd\" \"$1\"");
++    L.push("  if [ $IS_ROOT -eq 1 ] && [[ \"$cmd\" == 'sudo '* ]]; then cmd=${cmd#sudo }; fi");
++    L.push("  printf '  $ %s\\n  Expected: %s\\n' \"$cmd\" \"$expected\"");
+     L.push("  bash -c \"$cmd\" </dev/null 2>&1 | sed 's/^/    /'");
+     L.push("}");
+     const manualAll = [];
+@@ -210,9 +247,7 @@
+       L.push("");
+       L.push(`if begin ${shq(r.stig)} ${shq(r.vuln_id + " / " + r.stig_id)} ${shq(SEV[r.severity])} ${shq(tagged(r))}; then`);
+       for (const v of runnable) {
+-        L.push(`check ${shq(oneLine(v.expect))} <<'STIGX_EOF'`);
+-        L.push(v.cmd);
+-        L.push("STIGX_EOF");
++        L.push(`check ${shq(v.cmd)} ${shq(oneLine(v.expect))}`);
+       }
+       L.push("fi");
+     }
+@@ -222,8 +257,8 @@
+     if (manualAll.length || none.length) {
+       L.push("");
+       L.push("# Manual checks (not run by this script):");
+-      for (const [r, m] of manualAll) L.push(`#   ${r.vuln_id} / ${r.stig_id}: ${m.why}: ${oneLine(m.v.cmd)}`);
+-      for (const r of none) L.push(`#   ${r.vuln_id} / ${r.stig_id}: procedural; follow the DISA check procedure. ${oneLine(r.title)}`);
++      for (const [r, m] of manualAll) L.push(`#   ${oneLine(r.vuln_id)} / ${oneLine(r.stig_id)}: ${oneLine(m.why)}: ${oneLine(m.v.cmd)}`);
++      for (const r of none) L.push(`#   ${oneLine(r.vuln_id)} / ${oneLine(r.stig_id)}: procedural; follow the DISA check procedure. ${oneLine(r.title)}`);
+     }
+     return L.join("\n") + "\n";
+   }
+@@ -235,7 +270,7 @@
+     };
+   }
+ 
+-  const api = { powershell, bash, counts, pick, psSafe, unsafeReason };
++  const api = { powershell, bash, counts, pick, psSafe, unsafeReason, approvedCommand };
+   if (typeof module !== "undefined" && module.exports) module.exports = api;
+   else root.STIGX_SCRIPT = api;
+ })(typeof window !== "undefined" ? window : globalThis);
+diff --git a/STIG_Explorer/web/security.js b/STIG_Explorer/web/security.js
+new file mode 100644
+index 0000000..e6eff86
+--- /dev/null
++++ b/STIG_Explorer/web/security.js
+@@ -0,0 +1,15 @@
++/* Small, side-effect-free output encoding helpers. Tested under Node and used
++ * by the offline browser UI without any external dependencies. */
++(function (root) {
++  "use strict";
++  function csvCell(value) {
++    let cell = String(value ?? "");
++    // Spreadsheet apps may treat quoted CSV cells as formulas. A leading
++    // apostrophe forces text interpretation (including whitespace-prefixed).
++    if (/^[\s\u0000-\u001f\u007f-\u009f]*[=+\-@]/u.test(cell)) cell = "'" + cell;
++    return '"' + cell.replace(/"/g, '""') + '"';
++  }
++  const api = { csvCell };
++  if (typeof module !== "undefined" && module.exports) module.exports = api;
++  else root.STIGX_SECURITY = api;
++})(typeof window !== "undefined" ? window : globalThis);
