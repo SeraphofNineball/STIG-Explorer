@@ -13,7 +13,7 @@
     <div class="brand">
       <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z"/><path class="tick" d="m11 16 3.5 3.5L21.5 12"/></svg>
       <div>
-        <h1>STIG Explorer <small>— by Matthew Cusanelli</small></h1>
+        <h1>STIG Explorer</h1>
         <p id="dataInfo" class="muted small">Loading data…</p>
       </div>
     </div>
@@ -99,7 +99,7 @@
         </select>
         <button id="csvBtn" class="btn ghost" title="Export the filtered rules to CSV">Export CSV</button>
         <details class="menu" id="scriptMenu">
-          <summary class="btn ghost" title="Download a read-only script that runs the validation commands for the filtered rules">Export script ▾</summary>
+          <summary class="btn ghost" title="Download a script with only approved read-only checks; other commands are manual-only">Export script ▾</summary>
           <div class="menu-pop" role="menu">
             <button role="menuitem" data-script="ps1"><b>PowerShell (.ps1)</b><span id="ps1Count" class="muted small"></span></button>
             <button role="menuitem" data-script="sh"><b>Bash (.sh)</b><span id="shCount" class="muted small"></span></button>
@@ -133,6 +133,7 @@
 
   <script src="data/stig_data.js"></script>
   <script src="data/tags.js"></script>
+  <script src="security.js"></script>
   <script src="scripts.js"></script>
   <script src="app.js"></script>
 </body>
