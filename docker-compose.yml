@@ -1,0 +1,21 @@
+services:
+  stig-explorer:
+    build: .
+    image: stig-explorer:latest
+    container_name: stig-explorer
+    # Bound to localhost only. For team access, require a TLS/authenticated reverse proxy;
+    # do NOT expose the unauthenticated API directly to the network.
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    mem_limit: 768m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      STIGX_QUIET: "0"
+    restart: unless-stopped
+    # Pick up tag changes (python -m stig_explorer.tags) without rebuilding the image:
+    # volumes:
+    #   - ./web/data/tags.js:/app/web/data/tags.js:ro
