@@ -477,6 +477,7 @@ ${t.pro}
     }).join("");
     $("#about").innerHTML = `
       <h2>About STIG Explorer</h2>
+      <p><strong>Developed by:</strong> Matthew Cusanelli</p>
       <p>STIG Explorer makes the DISA Security Technical Implementation Guides (STIGs) for Red Hat Enterprise Linux, Canonical Ubuntu and Microsoft Windows
       desktop and server operating systems searchable, and explains every rule at three levels:</p>
       <ul>
