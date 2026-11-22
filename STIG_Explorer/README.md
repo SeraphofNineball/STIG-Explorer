@@ -386,10 +386,31 @@ external release digest when available. ZIP parsing imposes size, ratio, file-co
 `--fetch` probes `https://dl.dod.cyber.mil/wp-content/uploads/stigs/zip/` for the newest `V#R#` of each product, plus
 `U_CCI_List.zip` (the CCI-to-NIST mapping), and removes older releases from `data/raw/`.
 
-**Offline or air-gapped networks:** download the STIG zips and `U_CCI_List.zip` from
-<https://public.cyber.mil/stigs/downloads/> on a connected machine, or use the quarterly SRG-STIG library zip. Copy them
-into `data/raw/` and run `python -m stig_explorer.build --docs`. Nested zips are handled, and if several releases of
-the same STIG are present only the newest is used.
+**Offline or air-gapped networks:** the DISA source zips are committed to this repository in `data/raw/`, so a clone
+already has everything needed to rebuild. On the air-gapped machine, run the build without `--fetch`:
+
+```bash
+cd STIG_Explorer
+python -m stig_explorer.build --docs               # parse data/raw/, build data, compile tags, write documents
+```
+
+`--docs` writes Word files only when `python-docx` is installed; without it, the Markdown documents are still written
+and the app and its data are unaffected. Because `pip install` needs internet access, download the packages on a
+connected machine and carry them across:
+
+```bash
+# On a connected machine (same Python version and OS as the air-gapped machine)
+pip download -r requirements.txt -d wheels/
+
+# On the air-gapped machine
+pip install --no-index --find-links wheels/ -r requirements.txt
+```
+
+To update the STIGs, run `python -m stig_explorer.build --fetch --docs` on a connected machine, commit and push the
+new zips in `data/raw/` with the regenerated files, then bring the updated repository across to the air-gapped network.
+You can also download zips manually from <https://public.cyber.mil/stigs/downloads/> (or use the quarterly SRG-STIG
+library zip) and copy them into `data/raw/`. Nested zips are handled, and if several releases of the same STIG are
+present only the newest is used.
 
 **Adding a product:** add its DISA zip prefix (e.g. `U_CAN_Ubuntu_26-04_LTS`) to `PRODUCTS` in
 `stig_explorer/fetch.py`. RHEL, Ubuntu and Windows XCCDF files are recognised automatically. Other products need a small
@@ -501,7 +522,7 @@ STIG_Explorer/
 │   └── data/stig_data.js, tags.js      # generated data (committed, so the app works out of the box)
 ├── tags/FMCC.csv       # editable tag list template
 ├── docs/               # generated guide and per-STIG Word/Markdown documents
-├── data/raw/           # downloaded DISA source zips (git-ignored)
+├── data/raw/           # DISA source zips (committed, for offline rebuilds)
 ├── tests/test_core.py  # existing unit and integration tests
 ├── tests/test_security.py # injection, archive, CSV, API and download regression tests
 ├── requirements.txt    # python-docx (Word output only)
